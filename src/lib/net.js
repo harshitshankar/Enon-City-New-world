@@ -218,13 +218,26 @@ export function joinRoom(code, name) {
 }
 
 /**
- * Read the local player's appearance from the store. Uses a synchronous
- * namespace import (the store module is always loaded before net.js is used).
+ * Read the local player's appearance from the store.
+ *
+ * The store reference is resolved with a dynamic import (fired once on module
+ * load) instead of a static `import` statement. A static import created a
+ * module-init cycle (net.js -> store -> ... -> net.js) that, after the
+ * single-file production bundle reordered evaluation, threw
+ * "Cannot access 'X' before initialization" (TDZ) and blank-screened the page.
+ * The dynamic import breaks the cycle; by the time any user actually joins a
+ * room (always after a UI gesture) the cache is populated, and the appearance
+ * is re-broadcast at 15 Hz regardless.
  */
-import { useGameStore as _useGameStore } from "../store/useGameStore.js";
+let _store = null;
+import("../store/useGameStore.js").then((m) => {
+  _store = m.useGameStore;
+});
+
 function getAppearance() {
   try {
-    const a = _useGameStore.getState().playerAppearance || {};
+    if (!_store) return {};
+    const a = _store.getState().playerAppearance || {};
     return { skin: a.skin, hair: a.hair, shirt: a.shirt, pants: a.pants };
   } catch (e) {
     return {};
