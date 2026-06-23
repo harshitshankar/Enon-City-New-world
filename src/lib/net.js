@@ -81,7 +81,24 @@ export function joinRoom(code, name) {
     return;
   }
 
+  // Connection timeout: if the server is unreachable (e.g. the multiplayer
+  // relay isn't deployed, or VITE_WS_URL points at localhost in production),
+  // surface a clear error instead of hanging forever.
+  const joinTimeout = setTimeout(() => {
+    if (!connected) {
+      try {
+        ws.close();
+      } catch (e) {
+        /* noop */
+      }
+      handlers.error?.(
+        "Could not reach the multiplayer server. Make sure the relay (Web Service) is deployed and VITE_WS_URL is set."
+      );
+    }
+  }, 6000);
+
   ws.onopen = () => {
+    clearTimeout(joinTimeout);
     connected = true;
     handlers.open?.();
     ws.send(
@@ -250,9 +267,14 @@ function getAppearance() {
  * tiny (4 short strings) so the cost is negligible at 15 Hz.
  */
 export function broadcastSelf() {
-  if (!connected || !ws || ws.readyState !== ws.OPEN) return;
+  if (!connected || !ws) return;
+  const sock = ws; // capture — ws may be nulled by leaveRoom() before the
+                  // async import resolves. Re-check inside the callback.
+  if (sock.readyState !== sock.OPEN) return;
   // Lazy import to avoid a hard cycle with the store.
   import("../store/useGameStore.js").then(({ worldState, useGameStore }) => {
+    // Guard again: the socket may have closed (leave/error) during the await.
+    if (!ws || ws !== sock || ws.readyState !== ws.OPEN) return;
     const st = useGameStore.getState();
     const a = st.playerAppearance || {};
     ws.send(
