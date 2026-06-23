@@ -145,7 +145,7 @@ export default function HUD() {
             >
               <div
                 ref={nosBarRef}
-                style={{ width: "100%", height: "100%", background: "linear-gradient(90deg,#3ba8ff,#aee4ff)" }}
+                style={{ width: "100%", height: "100%", background: "linear-gradient(90deg,#4ab8ff,#ff4a4a)" }}
               />
             </div>
           </div>

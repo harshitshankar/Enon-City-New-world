@@ -3,9 +3,43 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 
 import { spawnQueue } from "../../lib/events";
-import { useGameStore, markCrime } from "../../store/useGameStore";
+import { useGameStore, markCrime, worldState } from "../../store/useGameStore";
 import { npcRegistry, vehicleRegistry } from "../../lib/registry";
 import { playSfx } from "../../lib/audio";
+
+/**
+ * Singleton screen-flash element: created lazily, reused for every nearby
+ * explosion. We just bump its opacity up and let the CSS transition fade it
+ * back to 0 — cheap, no React re-render.
+ */
+let flashEl = null;
+function ensureFlashEl() {
+  if (flashEl) return flashEl;
+  if (typeof document === "undefined") return null;
+  flashEl = document.createElement("div");
+  flashEl.style.cssText =
+    "position:fixed;inset:0;pointer-events:none;z-index:9999;" +
+    "background:radial-gradient(circle at 50% 50%, rgba(255,200,120,0.55), rgba(255,120,60,0.18) 60%, transparent 80%);" +
+    "opacity:0;transition:opacity 0.12s ease-out;mix-blend-mode:screen;";
+  document.body.appendChild(flashEl);
+  return flashEl;
+}
+function triggerFlash(pos, scale) {
+  const el = ensureFlashEl();
+  if (!el) return;
+  const dx = pos.x - worldState.playerPos.x;
+  const dz = pos.z - worldState.playerPos.z;
+  const dist = Math.hypot(dx, dz);
+  // Only flash if reasonably close (scale widens the range a bit).
+  if (dist > 38 + scale * 8) return;
+  const intensity = Math.max(0.15, 1 - dist / (40 + scale * 8));
+  el.style.transition = "none";
+  el.style.opacity = String(intensity);
+  // force reflow so the transition restarts, then fade out
+  void el.offsetWidth;
+  el.style.transition = "opacity 0.28s ease-out";
+  el.style.opacity = "0";
+}
 
 /**
  * ExplosionSystem
@@ -14,7 +48,7 @@ import { playSfx } from "../../lib/audio";
  * Nearby NPCs are damaged & ragdolled.
  */
 const MAX_EXPL = 12;
-const SHARDS = 14;
+const SHARDS = 22; // was 14 — bigger, denser debris bursts
 const DEBRIS_POOL = MAX_EXPL * SHARDS;
 
 export default function ExplosionSystem() {
@@ -84,6 +118,10 @@ export default function ExplosionSystem() {
       e.scale = req.scale || 1;
       e.pos.set(req.pos[0], req.pos[1], req.pos[2]);
       playSfx("explosion");
+      // Brief screen flash if the blast is close to the player (distance-gated
+      // so far-off explosions don't strobe the screen). The flash element is a
+      // singleton appended to <body> and faded out by the CSS transition.
+      triggerFlash(e.pos, e.scale);
       // init shards
       for (const s of e.shards) {
         s.p.copy(e.pos);
@@ -152,9 +190,9 @@ export default function ExplosionSystem() {
         sm.setMatrixAt(si++, dummy.matrix);
       }
 
-      // smoke ring (flat, expanding wide)
+      // smoke ring (flat, expanding wide) — widened for a meatier blast
       if (rm) {
-        const rw = (0.6 + k * 7) * e.scale;
+        const rw = (0.6 + k * 10) * e.scale;
         dummy.position.set(e.pos.x, e.pos.y + 0.2, e.pos.z);
         dummy.rotation.set(-Math.PI / 2, 0, 0);
         dummy.scale.set(rw, rw, 1);

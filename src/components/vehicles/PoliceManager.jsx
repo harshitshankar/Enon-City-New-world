@@ -27,6 +27,12 @@ export default function PoliceManager() {
   // the chasing cruiser on screen instead of popping it out mid-pursuit.
   const wanted = useGameStore((s) => Math.ceil(s.wanted));
   const activeVehicle = useGameStore((s) => s.activeVehicle);
+  // In multiplayer, cops are off by default (pure PvP). The host can toggle
+  // them on from the lobby; until then we don't spawn any chasers. Solo play
+  // is unaffected. (A cruiser the player hijacked is still kept mounted.)
+  const multiplayer = useGameStore((s) => s.multiplayer);
+  const copsOn = useGameStore((s) => (s.matchConfig ? s.matchConfig.cops : true));
+  const copsActive = multiplayer ? !!copsOn : true;
 
   // Police cars the player has entered at least once live here forever.
   const hijacked = useRef(new Set());
@@ -53,9 +59,11 @@ export default function PoliceManager() {
     <group>
       {spawns.map((pos, i) => {
         const id = `police-${i}`;
-        // keep mounted if within wanted level, OR the player is driving it,
-        // OR it was hijacked at least once this session.
-        const show = i < wanted || activeVehicle === id || hijacked.current.has(id);
+        // Keep mounted if the player is driving it OR it was hijacked once
+        // this session (persistence rule). Otherwise only spawn when cops are
+        // active and within the wanted level.
+        const driven = activeVehicle === id || hijacked.current.has(id);
+        const show = driven || (copsActive && i < wanted);
         return show ? (
           <Car key={id} id={id} position={pos} police />
         ) : null;

@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { spawnQueue, requestExplosion } from "../../lib/events";
 import { useGameStore, worldState } from "../../store/useGameStore";
 import { npcRegistry, vehicleRegistry } from "../../lib/registry";
+import { peers, sendHit } from "../../lib/net";
 
 /**
  * ProjectileSystem
@@ -22,6 +23,8 @@ const LIFE = { pistol: 1.4, rifle: 1.4, rocket: 3.2, bow: 3.5 };
 const EXPLOSIVE = { pistol: false, rifle: false, rocket: true, bow: true };
 // per-hit damage to NPCs / vehicles
 const DMG = { pistol: 12, rifle: 11, rocket: 120, bow: 70 };
+// per-hit damage to other human players (PvP) — tuned for a snappy TTK at 100 HP.
+const PLAYER_DMG = { pistol: 18, rifle: 13, rocket: 110, bow: 60 };
 // render category: pistol & rifle render as tracers
 const RENDER = { pistol: "bullet", rifle: "bullet", rocket: "rocket", bow: "arrow" };
 
@@ -65,6 +68,7 @@ function segSphereT(a, b, cx, cy, cz, R2) {
 
 export default function ProjectileSystem() {
   const bulletRef = useRef();
+  const bulletGlowRef = useRef();
   const rocketRef = useRef();
   const arrowRef = useRef();
   const trailRef = useRef();
@@ -127,6 +131,7 @@ export default function ProjectileSystem() {
     let ai = 0;
 
     const bm = bulletRef.current;
+    const bgm = bulletGlowRef.current;
     const rm = rocketRef.current;
     const am = arrowRef.current;
     const tm = trailRef.current;
@@ -174,6 +179,45 @@ export default function ProjectileSystem() {
           }
         }
       }
+      // PEER (human player) collision — same swept segSphereT test as NPCs,
+      // centred on the peer's torso (foot y + 1). This is the PvP hit detection:
+      // your bullets now hit other players instead of passing through them. The
+      // hit is reported to the victim over the net (sendHit), and the shooter
+      // counts the kill locally when this bullet is the lethal one.
+      if (!hit) {
+        const pdmg = PLAYER_DMG[p.type] || 15;
+        for (const id in peers) {
+          const peer = peers[id];
+          if (!peer || peer.health <= 0) continue;
+          const cx = peer.pos[0] || 0;
+          const cy = (peer.pos[1] || 0) + 1; // torso
+          const cz = peer.pos[2] || 0;
+          const R = 1.4;
+          const t = segSphereT(p.prevPos, p.pos, cx, cy, cz, R * R);
+          if (t >= 0 && t <= 1) {
+            hit = true;
+            hitPos = new THREE.Vector3().lerpVectors(p.prevPos, p.pos, t);
+            const st = useGameStore.getState();
+            // Friendly fire off in team mode: report nothing for an ally hit.
+            const me = st.team;
+            const ally = me && peer.team === me;
+            if (ally) break;
+            // Report the hit to the victim over the net so their health drops.
+            sendHit(peer.id, pdmg);
+            st.addScore(25);
+            // Lethal hit: the shooter credits the kill immediately. We predict
+            // the victim's health locally so there's no dispute or delay.
+            if ((peer.health - pdmg) <= 0) {
+              st.addKill();
+              st.addTeamKill();
+            } else {
+              st.registerHit(); // "hit" telemetry for the HUD crosshair feedback
+            }
+            break;
+          }
+        }
+      }
+
       // Vehicle collision — SWEPT segment-vs-cylinder (horizontal radius + Y window).
       if (!hit) {
         for (const v of vehicleRegistry.values()) {
@@ -237,7 +281,10 @@ export default function ProjectileSystem() {
         // rifle tracers a touch longer
         dummy.scale.set(1, p.type === "rifle" ? 1.6 : 1, 1);
         dummy.updateMatrix();
-        bm.setMatrixAt(bi++, dummy.matrix);
+        bm.setMatrixAt(bi, dummy.matrix);
+        // additive glow halo shares the same transform (slightly larger geo).
+        if (bgm) bgm.setMatrixAt(bi, dummy.matrix);
+        bi++;
       } else if (cat === "rocket" && rm) {
         dummy.position.copy(p.pos);
         dummy.quaternion.copy(q);
@@ -258,6 +305,11 @@ export default function ProjectileSystem() {
       for (let i = bi; i < POOL; i++) bm.setMatrixAt(i, hidden);
       bm.count = POOL;
       bm.instanceMatrix.needsUpdate = true;
+    }
+    if (bgm) {
+      for (let i = bi; i < POOL; i++) bgm.setMatrixAt(i, hidden);
+      bgm.count = POOL;
+      bgm.instanceMatrix.needsUpdate = true;
     }
     if (rm) {
       for (let i = ri; i < POOL; i++) rm.setMatrixAt(i, hidden);
@@ -297,10 +349,15 @@ export default function ProjectileSystem() {
 
   return (
     <group>
-      {/* bullets: bright, clearly visible tracers */}
+      {/* bullets: bright glowing tracers */}
       <instancedMesh ref={bulletRef} args={[undefined, undefined, POOL]} frustumCulled={false}>
-        <capsuleGeometry args={[0.11, 1.1, 4, 8]} />
-        <meshBasicMaterial color="#fff15a" toneMapped={false} />
+        <capsuleGeometry args={[0.13, 1.3, 4, 8]} />
+        <meshBasicMaterial color="#fff6a8" toneMapped={false} transparent opacity={0.95} />
+      </instancedMesh>
+      {/* additive tracer glow halo (slightly larger, transparent) */}
+      <instancedMesh ref={bulletGlowRef} args={[undefined, undefined, POOL]} frustumCulled={false}>
+        <capsuleGeometry args={[0.24, 1.6, 4, 8]} />
+        <meshBasicMaterial color="#ffcc4a" toneMapped={false} transparent opacity={0.35} depthWrite={false} blending={THREE.AdditiveBlending} />
       </instancedMesh>
 
       {/* rockets: low-poly cones */}

@@ -27,12 +27,16 @@ export default function Player() {
   const bodyRef = useRef();
   const visualRef = useRef();
   const charRef = useRef();
+  const muzzleRef = useRef();
+  const muzzleLightRef = useRef();
 
   const activeVehicle = useGameStore((s) => s.activeVehicle);
   const cameraMode = useGameStore((s) => s.cameraMode);
+  const appearance = useGameStore((s) => s.playerAppearance);
 
   const walkPhase = useRef(0);
   const fireCooldown = useRef(0);
+  const muzzleTimer = useRef(0); // counts down the muzzle-flash visibility
   const yaw = useRef(0); // facing heading
   const stepTimer = useRef(0);
   const airborne = useRef(false);
@@ -57,13 +61,37 @@ export default function Player() {
   }, [driving]);
 
   /* ---- DEATH / RESPAWN -------------------------------------------------
-   * When health hits 0, kick the player out of any vehicle, drop them on the
-   * FAR side of the map (diagonally opposite their current position), reset
-   * health + wanted, and clear velocity. A small death SFX + explosion sells
-   * the moment. `spawnId` bumps so other systems can react if needed.
+   * When health hits 0:
+   *   - SOLO: kick out of any vehicle, drop diagonally opposite on the map
+   *     after one frame, reset health + wanted (instant respawn, like before).
+   *   - MULTIPLAYER: start a 3s respawn timer (store.respawnAt) so the HUD can
+   *     show a countdown overlay, then respawn at a team-appropriate spawn
+   *     point that is far from enemies. Score/kills are kept.
+   * `spawnId` bumps so other systems can react if needed.
    * ------------------------------------------------------------------- */
   const health = useGameStore((s) => s.health);
   const dead = useRef(false);
+
+  // Pick a respawn point. In a team match, bias toward the team's home corner
+  // and away from where enemies currently are; otherwise (solo / no team) drop
+  // diagonally opposite the death location.
+  const pickSpawn = (st) => {
+    const px = worldState.playerPos.x;
+    const pz = worldState.playerPos.z;
+    const lim = HALF - 8;
+    if (st.multiplayer && st.team) {
+      // Team A home = -x,-z corner; Team B home = +x,+z corner.
+      const hx = st.team === "A" ? -lim : lim;
+      const hz = st.team === "A" ? -lim : lim;
+      const jitter = () => (Math.random() - 0.5) * 26;
+      return { x: THREE.MathUtils.clamp(hx + jitter(), -lim, lim), z: THREE.MathUtils.clamp(hz + jitter(), -lim, lim) };
+    }
+    return {
+      x: THREE.MathUtils.clamp(-px + (Math.random() - 0.5) * 12, -lim, lim),
+      z: THREE.MathUtils.clamp(-pz + (Math.random() - 0.5) * 12, -lim, lim),
+    };
+  };
+
   useEffect(() => {
     const st = useGameStore.getState();
     if (health <= 0 && !dead.current) {
@@ -71,24 +99,35 @@ export default function Player() {
       // If they died inside a car, the Car explodes on its own and calls
       // exitVehicle(); make sure we're on foot before relocating.
       if (st.activeVehicle) st.exitVehicle();
-      // respawn diagonally opposite the current position, clamped to the map.
-      const px = worldState.playerPos.x;
-      const pz = worldState.playerPos.z;
-      const lim = HALF - 8;
-      const nx = THREE.MathUtils.clamp(-px + (Math.random() - 0.5) * 12, -lim, lim);
-      const nz = THREE.MathUtils.clamp(-pz + (Math.random() - 0.5) * 12, -lim, lim);
-      // give the body a beat to settle before teleport (Rapier needs the body
-      // to exist + be on foot). Wait one frame.
-      requestAnimationFrame(() => {
-        const body = bodyRef.current;
-        if (body) {
-          body.setTranslation({ x: nx, y: 2.5, z: nz }, true);
-          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-        }
-        playSfx("explosion");
-        useGameStore.getState().respawn();
-        dead.current = false;
-      });
+
+      // SOLO: instant respawn (keep the original snappy feel).
+      // MULTIPLAYER: 3s respawn delay so there's a beat before you drop back in.
+      const RESPAWN_MS = st.multiplayer ? 3000 : 0;
+      const respawnAt = RESPAWN_MS ? Date.now() + RESPAWN_MS : null;
+      if (RESPAWN_MS) useGameStore.setState({ respawnAt });
+
+      const doRespawn = () => {
+        const cur = useGameStore.getState();
+        const { x: nx, z: nz } = pickSpawn(cur);
+        // give the body a beat to settle before teleport (Rapier needs the body
+        // to exist + be on foot). Wait one frame.
+        requestAnimationFrame(() => {
+          const body = bodyRef.current;
+          if (body) {
+            body.setTranslation({ x: nx, y: 2.5, z: nz }, true);
+            body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          }
+          playSfx("explosion");
+          useGameStore.getState().respawn();
+          dead.current = false;
+        });
+      };
+
+      if (RESPAWN_MS) {
+        const t = setTimeout(doRespawn, RESPAWN_MS);
+        return () => clearTimeout(t);
+      }
+      doRespawn();
     }
   }, [health]);
 
@@ -198,6 +237,27 @@ export default function Player() {
     worldState.playerPos.z = pos.z;
     worldState.playerRot = yaw.current;
 
+    // Muzzle flash: place it at the muzzle point (front of the player, chest
+    // height, along the aim direction) and show it while muzzleTimer > 0.
+    if (muzzleTimer.current > 0) {
+      muzzleTimer.current -= rawDelta;
+      if (muzzleRef.current) {
+        muzzleRef.current.visible = true;
+        const mx = pos.x + tmp.camDir.x * 0.5;
+        const mz = pos.z + tmp.camDir.z * 0.5;
+        muzzleRef.current.position.set(mx, pos.y + 1.25, mz);
+        const flick = 0.7 + Math.random() * 0.5;
+        muzzleRef.current.scale.setScalar(flick);
+      }
+      if (muzzleLightRef.current) {
+        muzzleLightRef.current.visible = true;
+        muzzleLightRef.current.position.set(pos.x + tmp.camDir.x * 0.5, pos.y + 1.25, pos.z + tmp.camDir.z * 0.5);
+      }
+    } else if (muzzleRef.current) {
+      muzzleRef.current.visible = false;
+      if (muzzleLightRef.current) muzzleLightRef.current.visible = false;
+    }
+
     /* ------------------------------------------------------------------ */
     /*  SHOOTING                                                           */
     /* ------------------------------------------------------------------ */
@@ -251,6 +311,9 @@ export default function Player() {
       dir: [tmp.shootDir.x, tmp.shootDir.y, tmp.shootDir.z],
       owner: "player",
     });
+
+    // Trigger the muzzle flash (positioned + shown next frame in useFrame).
+    muzzleTimer.current = 0.06;
 
     playSfx(w === "rocket" ? "rocket" : w === "bow" ? "bow" : "shot");
     st.addWanted(0.04);
@@ -308,8 +371,25 @@ export default function Player() {
           ref={charRef}
           walkPhase={walkPhase.current}
           holding={aiming}
+          skin={appearance.skin}
+          hair={appearance.hair}
+          shirt={appearance.shirt}
+          pants={appearance.pants}
         />
       </group>
+      {/* Muzzle flash (world-positioned each shot, hidden otherwise) */}
+      <mesh ref={muzzleRef} visible={false}>
+        <sphereGeometry args={[0.18, 8, 8]} />
+        <meshBasicMaterial color="#ffe98a" toneMapped={false} transparent opacity={0.9} depthWrite={false} />
+      </mesh>
+      <pointLight
+        ref={muzzleLightRef}
+        visible={false}
+        intensity={6}
+        distance={10}
+        decay={2}
+        color="#ffd27a"
+      />
     </RigidBody>
   );
 }

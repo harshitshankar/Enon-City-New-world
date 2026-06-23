@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import Car from "./Car";
 import Helicopter from "./Helicopter";
 import { HALF, BLOCK, GRID } from "../world/World";
+import { HELIPADS } from "../world/Plaza";
 
 /**
  * Spawns parked/hijackable cars on the road grid plus a few AI traffic cars
@@ -49,14 +50,16 @@ export default function VehicleManager() {
     return arr;
   }, []);
 
-  // Helicopters: one on a downtown rooftop (high up), one near spawn (ground pad).
-  const helis = useMemo(
-    () => [
-      { id: "heli-roof", position: [6, 24, -6] },
-      { id: "heli-pad", position: [-16, 6, 18] },
-    ],
-    []
-  );
+  // Helicopters: one on a downtown rooftop (high up) + one spread across the
+  // dedicated helipad plaza (see Plaza.jsx) so several players can grab a heli
+  // at once. We use 5 of the 6 plaza pads, leaving one open as a landing spot.
+  const helis = useMemo(() => {
+    const arr = [{ id: "heli-roof", position: [6, 24, -6] }];
+    HELIPADS.slice(0, 5).forEach((p, i) => {
+      arr.push({ id: `heli-pad-${i}`, position: [p.x, 6, p.z] });
+    });
+    return arr;
+  }, []);
 
   return (
     <group>
