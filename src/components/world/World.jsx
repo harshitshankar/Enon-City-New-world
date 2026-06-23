@@ -5,6 +5,10 @@ import * as THREE from "three";
 import { worldState } from "../../store/useGameStore";
 import Plaza from "./Plaza";
 import StreetLightGlow from "./StreetLightGlow";
+// Layout constants live in a separate import-cycle-free module so World and the
+// children it imports (Plaza, StreetLightGlow, ...) can both read them without
+// forming a circular import. Re-exported below for any legacy callers.
+import { BLOCK, GRID, ROAD_W, HALF, cityConfig } from "./constants";
 
 /**
  * World
@@ -21,13 +25,9 @@ import StreetLightGlow from "./StreetLightGlow";
  * Instanced meshes keep draw calls low even at 12x12 = 144 blocks.
  */
 
-export const BLOCK = 28; // distance between road centres
-export const GRID = 12; // GRID x GRID blocks (was 7 -> now ~3x area)
-export const ROAD_W = 9; // road width
-export const HALF = (GRID * BLOCK) / 2; // = 168
-
-// Exported so other systems (NPCs/vehicles) can align with the road grid.
-export const cityConfig = { BLOCK, GRID, ROAD_W, HALF };
+// Re-export the layout constants for any module that still imports them from
+// World (kept for backward compatibility). The source of truth is constants.js.
+export { BLOCK, GRID, ROAD_W, HALF, cityConfig };
 
 /* ---------- districts ---------- */
 // District layout by normalized grid coordinate (0..1 across the map):

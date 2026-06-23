@@ -2,7 +2,7 @@ import { useMemo, useRef } from "react";
 import { useLayoutEffect } from "react";
 import * as THREE from "three";
 import { RigidBody, CuboidCollider } from "@react-three/rapier";
-import { HALF, BLOCK } from "./World";
+import { HALF, BLOCK } from "./constants";
 
 /**
  * Plaza — a dedicated flat helicopter plaza off the roads, distinct from the

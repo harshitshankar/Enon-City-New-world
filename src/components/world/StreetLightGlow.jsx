@@ -2,7 +2,7 @@ import { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { worldState } from "../../store/useGameStore";
-import { HALF, BLOCK, GRID, ROAD_W } from "./World";
+import { HALF, BLOCK, GRID, ROAD_W } from "./constants";
 
 /**
  * StreetLightGlow — cheap soft radial light decals on the ground under each
