@@ -8,17 +8,23 @@
  *
  * Message protocol (JSON):
  *   client -> server:
- *     { t: "join",  room, name }            join/create a room
- *     { t: "state", pos, rot, vel, vehicle, wanted, health }  periodic pose
- *     { t: "hit",   id }                     "I shot player id"
+ *     { t: "join",  room, name, skin, hair, shirt, pants }  join/create a room
+ *     { t: "state", pos, rot, vel, vehicle, wanted, health, kills, skin.. }  pose
+ *     { t: "hit",   id, dmg }                "I shot player id for dmg"
+ *     { t: "config", mode, duration, cops }  host-only match settings
  *     { t: "leave" }                         graceful leave
  *   server -> client:
- *     { t: "roster", players: [{id,name}]... , self }   room membership + your id
- *     { t: "join",   id, name }              a player joined
+ *     { t: "roster", players: [{id,name,team}]... , self, room, config }  membership
+ *     { t: "join",   id, name, team }        a player joined
  *     { t: "state",  id, pos, rot, ... }     a player's pose
- *     { t: "hit",    id, by }                someone was hit
+ *     { t: "hit",    id, by, dmg }           someone was hit
+ *     { t: "config", mode, duration, cops }  host changed settings (broadcast)
  *     { t: "leave",  id }                    a player left
  *     { t: "full" }                          room is full (8/8)
+ *
+ * Teams: assigned deterministically by join order — index 0,2,4,6 -> Team A,
+ * index 1,3,5,7 -> Team B. This keeps 2v2 balanced from the first 4 players and
+ * 4v4 balanced across all 8, with no negotiation between clients.
  *
  * Rooms live in memory and are removed when empty. No persistence.
  *
@@ -32,9 +38,17 @@ const MAX_PLAYERS = 8;
 
 const wss = new WebSocketServer({ port: PORT, path: "/" });
 
-/** @type {Map<string, { id:number, name:string, ws:WebSocket }[]>} room code -> members */
+/**
+ * @type {Map<string, { members: object[], config: object }>} room code -> room
+ * Each member: { id, name, ws }. Team is derived from the member's index in the
+ * array (parity), so it is recomputed fresh on every roster request — players
+ * keep a stable team as long as nobody ahead of them leaves.
+ */
 const rooms = new Map();
 let nextId = 1;
+
+// Default match config the host can override from the lobby.
+const DEFAULT_CONFIG = { mode: "tdm4", duration: 10, cops: false };
 
 function makeCode() {
   // 6-char A-Z0-9 (no ambiguous chars)
@@ -48,23 +62,35 @@ function send(ws, obj) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 }
 
+/** Team by join-order parity: even index -> A, odd -> B. */
+function teamForIndex(i) {
+  return i % 2 === 0 ? "A" : "B";
+}
+
 function rosterFor(roomCode) {
-  const members = rooms.get(roomCode) || [];
-  return members.map((m) => ({ id: m.id, name: m.name }));
+  const room = rooms.get(roomCode);
+  const members = room ? room.members : [];
+  return members.map((m, i) => ({ id: m.id, name: m.name, team: teamForIndex(i) }));
+}
+
+function configFor(roomCode) {
+  const room = rooms.get(roomCode);
+  return room ? room.config : { ...DEFAULT_CONFIG };
 }
 
 function broadcast(roomCode, msg, exceptId = null) {
-  const members = rooms.get(roomCode);
-  if (!members) return;
-  for (const m of members) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+  for (const m of room.members) {
     if (m.id === exceptId) continue;
     send(m.ws, msg);
   }
 }
 
 function removeMember(roomCode, id) {
-  const members = rooms.get(roomCode);
-  if (!members) return;
+  const room = rooms.get(roomCode);
+  if (!room) return;
+  const members = room.members;
   const idx = members.findIndex((m) => m.id === id);
   if (idx === -1) return;
   members.splice(idx, 1);
@@ -88,11 +114,12 @@ wss.on("connection", (ws) => {
         // leave any previous room first
         if (self.room) removeMember(self.room, self.id);
         const room = (msg.room || "").toUpperCase().slice(0, 6) || makeCode();
-        let members = rooms.get(room);
-        if (!members) {
-          members = [];
-          rooms.set(room, members);
+        let roomObj = rooms.get(room);
+        if (!roomObj) {
+          roomObj = { members: [], config: { ...DEFAULT_CONFIG } };
+          rooms.set(room, roomObj);
         }
+        const members = roomObj.members;
         if (members.length >= MAX_PLAYERS) {
           send(ws, { t: "full" });
           return;
@@ -100,10 +127,20 @@ wss.on("connection", (ws) => {
         self.room = room;
         self.name = (msg.name || "Player").slice(0, 16);
         members.push(self);
-        // tell the joiner its id + the full roster
-        send(ws, { t: "roster", players: rosterFor(room), self: self.id, room });
-        // tell everyone else a new player joined
-        broadcast(room, { t: "join", id: self.id, name: self.name }, self.id);
+        // tell the joiner its id + the full roster (teams + current config)
+        send(ws, {
+          t: "roster",
+          players: rosterFor(room),
+          self: self.id,
+          room,
+          config: configFor(room),
+        });
+        // tell everyone else a new player joined (with their team)
+        broadcast(
+          room,
+          { t: "join", id: self.id, name: self.name, team: teamForIndex(members.length - 1) },
+          self.id
+        );
         break;
       }
       case "state": {
@@ -114,15 +151,34 @@ wss.on("connection", (ws) => {
       }
       case "hit": {
         if (!self.room) return;
-        // relay the hit (target id + attacker id) to the whole room
-        broadcast(self.room, { t: "hit", id: msg.id, by: self.id });
+        // relay the hit (target id + attacker id + damage) to the whole room
+        broadcast(self.room, { t: "hit", id: msg.id, by: self.id, dmg: msg.dmg });
+        break;
+      }
+      case "config": {
+        // Host-only: update the room's match settings and broadcast to all.
+        if (!self.room) return;
+        const roomObj = rooms.get(self.room);
+        if (!roomObj) return;
+        roomObj.config = {
+          mode: msg.mode || DEFAULT_CONFIG.mode,
+          duration: Number(msg.duration) || DEFAULT_CONFIG.duration,
+          cops: !!msg.cops,
+        };
+        broadcast(self.room, { t: "config", ...roomObj.config });
         break;
       }
       case "start": {
         // Host started the game — tell EVERY member (including the host echo)
-        // to launch into the shared city.
+        // to launch into the shared city, carrying the final roster (teams) and
+        // the agreed match config so everyone starts with identical settings.
         if (!self.room) return;
-        broadcast(self.room, { t: "start", room: self.room });
+        broadcast(self.room, {
+          t: "start",
+          room: self.room,
+          roster: rosterFor(self.room),
+          config: configFor(self.room),
+        });
         break;
       }
       case "leave": {
@@ -146,11 +202,13 @@ wss.on("connection", (ws) => {
 
 // Heartbeat: prune dead connections every 20s.
 setInterval(() => {
-  for (const [code, members] of rooms) {
+  for (const [code, room] of rooms) {
+    const members = room.members;
     for (let i = members.length - 1; i >= 0; i--) {
       if (members[i].ws.readyState !== members[i].ws.OPEN) {
+        const deadId = members[i].id; // capture BEFORE splice
         members.splice(i, 1);
-        broadcast(code, { t: "leave", id: members[i]?.id });
+        broadcast(code, { t: "leave", id: deadId });
       }
     }
     if (members.length === 0) rooms.delete(code);

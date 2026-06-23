@@ -60,6 +60,9 @@ export const worldState = {
   // wanted decay: timestamp (seconds) of the last crime committed
   lastCrime: -999,
   clock: 0, // running game clock in seconds (advanced by WantedSystem)
+  // Day/night darkness factor 0..1 (0 = bright day, 1 = deep night). Driven by
+  // DayNightCycle from the sun's height; read by light-decal systems.
+  darkness: 0,
 };
 
 // Mark that a crime just happened (resets the wanted decay timer).
@@ -111,11 +114,30 @@ export const useGameStore = create((set, get) => ({
   playerName: "Player",
   // roster for the lobby UI: [{id,name,isHost,ready}]
   roster: [],
+  // Character appearance (synced to peers, persisted to localStorage).
+  // Defaults read back on load via setAppearance() in App.
+  playerAppearance: {
+    skin: "#e8b98f",
+    hair: "#1a1a22",
+    shirt: "#f4f0e8",
+    pants: "#2b2b3a",
+  },
   setLobbyPhase: (p) => set({ lobbyPhase: p }),
   setMultiplayer: (m) => set({ multiplayer: m }),
   setRoomId: (id) => set({ roomId: id }),
   setPlayerName: (n) => set({ playerName: n }),
   setRoster: (r) => set({ roster: r }),
+  // Merge a partial appearance update + persist to localStorage.
+  setAppearance: (partial) =>
+    set((s) => {
+      const playerAppearance = { ...s.playerAppearance, ...partial };
+      try {
+        localStorage.setItem("neonAppearance", JSON.stringify(playerAppearance));
+      } catch (e) {
+        /* ignore */
+      }
+      return { playerAppearance };
+    }),
 
   /* ---- camera ---- */
   // 'foot' | 'aim' | 'drive'
@@ -128,8 +150,19 @@ export const useGameStore = create((set, get) => ({
   // increments every time the player is (re)spawned — systems can read it to
   // re-seed spawn-side effects. Purely reactive so anything can subscribe.
   spawnId: 0,
-  damage: (amt) =>
-    set((s) => ({ health: Math.max(0, s.health - amt) })),
+  // PvP: id of the player who last damaged us (for kill attribution). Cleared
+  // on respawn. Also bumped via registerHit on every landed shot for HUD flash.
+  lastHitBy: null,
+  hitFlash: 0, // counter bumped each time we land a shot (crosshair feedback)
+  registerHit: () => set((s) => ({ hitFlash: s.hitFlash + 1 })),
+  // Multiplayer respawn: when health hits 0 we set respawnAt = now + 3000ms so
+  // the HUD can show a countdown. Solo play keeps the instant respawn.
+  respawnAt: null, // ms epoch when the pending respawn fires, or null
+  damage: (amt, byId) =>
+    set((s) => ({
+      health: Math.max(0, s.health - amt),
+      lastHitBy: byId != null ? byId : s.lastHitBy,
+    })),
   heal: (amt) =>
     set((s) => ({ health: Math.min(s.maxHealth, s.health + amt) })),
   // Full respawn: full health, wanted wiped, score/kills kept.
@@ -141,6 +174,8 @@ export const useGameStore = create((set, get) => ({
       nearVehicle: null,
       cameraMode: "foot",
       spawnId: s.spawnId + 1,
+      lastHitBy: null,
+      respawnAt: null,
     })),
 
   wanted: 0, // 0..5 stars
@@ -215,20 +250,61 @@ export const useGameStore = create((set, get) => ({
   addScore: (n) => set((s) => ({ score: s.score + n })),
   kills: 0,
   carKills: 0,
+  // Team deathmatch: this client's own team ("A" | "B" | null) and how many
+  // kills its team has racked up (bumped locally on every lethal hit, since the
+  // shooter always knows they made the kill — no dispute possible).
+  team: null,
+  teamKills: { A: 0, B: 0 },
+  addTeamKill: () =>
+    set((s) =>
+      s.team
+        ? { teamKills: { ...s.teamKills, [s.team]: s.teamKills[s.team] + 1 } }
+        : {}
+    ),
+  // Apply a remote team-kill tally (echoed from peers' state) so the scoreboard
+  // converges across clients even if you didn't witness the kill.
+  setTeamKills: (team, n) =>
+    set((s) => ({ teamKills: { ...s.teamKills, [team]: Math.max(s.teamKills[team] || 0, n) } })),
+  setTeam: (team) => set({ team }),
   // Wanted becomes active after 5 kills OR 5 destroyed cars; each further
-  // crime escalates stars. Decays via WantedSystem when you escape.
+  // crime escalates stars. Decays via WantedSystem when you escape. In a team
+  // deathmatch cops are disabled, so the wanted escalation is a no-op visually.
   addKill: () =>
     set((s) => {
       const kills = s.kills + 1;
-      let wanted = s.wanted;
-      if (kills + s.carKills >= 5) wanted = Math.min(5, Math.max(wanted, 1 + Math.floor((kills + s.carKills - 5) / 3)));
-      return { kills, score: s.score + 100, wanted };
+      const next = { kills, score: s.score + 100 };
+      // Only escalate wanted in solo play; matches disable cops.
+      if (!s.multiplayer) {
+        let wanted = s.wanted;
+        if (kills + s.carKills >= 5) wanted = Math.min(5, Math.max(wanted, 1 + Math.floor((kills + s.carKills - 5) / 3)));
+        next.wanted = wanted;
+      }
+      return next;
     }),
   addCarKill: () =>
     set((s) => {
       const carKills = s.carKills + 1;
-      let wanted = s.wanted;
-      if (s.kills + carKills >= 5) wanted = Math.min(5, Math.max(wanted, 1 + Math.floor((s.kills + carKills - 5) / 3)));
-      return { carKills, score: s.score + 250, wanted };
+      const next = { carKills, score: s.score + 250 };
+      if (!s.multiplayer) {
+        let wanted = s.wanted;
+        if (s.kills + carKills >= 5) wanted = Math.min(5, Math.max(wanted, 1 + Math.floor((s.kills + carKills - 5) / 3)));
+        next.wanted = wanted;
+      }
+      return next;
     }),
+
+  /* ---- match / team deathmatch config ----
+   * Host-only editable; broadcast through the server as a "config" message.
+   * matchStartTime is set (locally, on start) so the MatchHUD can count down
+   * in sync across all clients (they all received the same "start" message).
+   * matchOver flips the HUD to the end screen. */
+  matchConfig: { mode: "tdm4", duration: 10, cops: false },
+  matchStartTime: null, // ms epoch when the match began
+  matchOver: false,
+  setMatchConfig: (partial) =>
+    set((s) => ({ matchConfig: { ...s.matchConfig, ...partial } })),
+  beginMatch: () =>
+    set({ matchStartTime: Date.now(), matchOver: false }),
+  endMatch: () => set({ matchOver: true }),
+  resetMatch: () => set({ matchOver: false, matchStartTime: null, teamKills: { A: 0, B: 0 }, kills: 0, carKills: 0, score: 0 }),
 }));

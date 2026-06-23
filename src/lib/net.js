@@ -38,12 +38,13 @@ let connected = false;
 let sendInterval = null;
 
 const handlers = {
-  roster: null, // (roster, selfId, room) => void
+  roster: null, // (roster, selfId, room, config) => void
   join: null, // (peer) => void
   leave: null, // (peerId) => void
   state: null, // (peerId, state) => void
-  hit: null, // (peerId, byId) => void
-  start: null, // (room) => void  — host started the game; everyone launches
+  hit: null, // (peerId, byId, dmg) => void
+  start: null, // (room, roster, config) => void  — host started the game
+  config: null, // (config) => void  — host changed match settings
   error: null, // (msg) => void
   open: null, // () => void
 };
@@ -83,7 +84,9 @@ export function joinRoom(code, name) {
   ws.onopen = () => {
     connected = true;
     handlers.open?.();
-    ws.send(JSON.stringify({ t: "join", room: roomCode, name: playerName }));
+    ws.send(
+      JSON.stringify({ t: "join", room: roomCode, name: playerName, ...getAppearance() })
+    );
     // start broadcasting our own pose ~15 Hz
     if (sendInterval) clearInterval(sendInterval);
     sendInterval = setInterval(broadcastSelf, 1000 / 15);
@@ -113,10 +116,17 @@ export function joinRoom(code, name) {
               wanted: 0,
               health: 100,
               t: 0,
+              // appearance + team (may be undefined for older peers)
+              skin: p.skin,
+              hair: p.hair,
+              shirt: p.shirt,
+              pants: p.pants,
+              team: p.team,
+              kills: p.kills || 0,
             };
           }
         }
-        handlers.roster?.(msg.players, selfId, roomCode);
+        handlers.roster?.(msg.players, selfId, roomCode, msg.config);
         break;
       case "join":
         if (msg.id !== selfId) {
@@ -130,6 +140,12 @@ export function joinRoom(code, name) {
             wanted: 0,
             health: 100,
             t: 0,
+            skin: msg.skin,
+            hair: msg.hair,
+            shirt: msg.shirt,
+            pants: msg.pants,
+            team: msg.team,
+            kills: 0,
           };
           handlers.join?.(peers[msg.id]);
         }
@@ -143,16 +159,37 @@ export function joinRoom(code, name) {
           if (msg.vehicle !== undefined) p.vehicle = msg.vehicle;
           if (typeof msg.wanted === "number") p.wanted = msg.wanted;
           if (typeof msg.health === "number") p.health = msg.health;
+          if (typeof msg.kills === "number") p.kills = msg.kills;
+          // appearance (synced cheaply — only present when it changed)
+          if (msg.skin) p.skin = msg.skin;
+          if (msg.hair) p.hair = msg.hair;
+          if (msg.shirt) p.shirt = msg.shirt;
+          if (msg.pants) p.pants = msg.pants;
           p.t = performance.now();
         }
         break;
       case "hit":
-        handlers.hit?.(msg.id, msg.by);
+        handlers.hit?.(msg.id, msg.by, msg.dmg);
         break;
       case "start":
         // Host launched the shared game — every client (including the host
-        // echo) flips into playing mode.
-        handlers.start?.(msg.room);
+        // echo) flips into playing mode. Carries the final roster (with teams)
+        // and the agreed match config so everyone starts identically.
+        // Re-seed team affiliation for existing peers from the roster.
+        if (Array.isArray(msg.roster)) {
+          for (const p of msg.roster) {
+            if (peers[p.id]) peers[p.id].team = p.team;
+          }
+        }
+        handlers.start?.(msg.room, msg.roster, msg.config);
+        break;
+      case "config":
+        // Host changed match settings in the lobby — forward to the caller.
+        handlers.config?.({
+          mode: msg.mode,
+          duration: msg.duration,
+          cops: msg.cops,
+        });
         break;
       case "leave":
         delete peers[msg.id];
@@ -181,14 +218,30 @@ export function joinRoom(code, name) {
 }
 
 /**
+ * Read the local player's appearance from the store. Uses a synchronous
+ * namespace import (the store module is always loaded before net.js is used).
+ */
+import { useGameStore as _useGameStore } from "../store/useGameStore.js";
+function getAppearance() {
+  try {
+    const a = _useGameStore.getState().playerAppearance || {};
+    return { skin: a.skin, hair: a.hair, shirt: a.shirt, pants: a.pants };
+  } catch (e) {
+    return {};
+  }
+}
+
+/**
  * Broadcast our own pose. Reads the local world state so callers don't have to
- * push every frame.
+ * push every frame. Appearance is included so peers see customisation; it's
+ * tiny (4 short strings) so the cost is negligible at 15 Hz.
  */
 export function broadcastSelf() {
   if (!connected || !ws || ws.readyState !== ws.OPEN) return;
   // Lazy import to avoid a hard cycle with the store.
   import("../store/useGameStore.js").then(({ worldState, useGameStore }) => {
     const st = useGameStore.getState();
+    const a = st.playerAppearance || {};
     ws.send(
       JSON.stringify({
         t: "state",
@@ -202,14 +255,19 @@ export function broadcastSelf() {
         vehicle: st.activeVehicle || null,
         wanted: st.wanted,
         health: st.health,
+        kills: st.kills || 0,
+        skin: a.skin,
+        hair: a.hair,
+        shirt: a.shirt,
+        pants: a.pants,
       })
     );
   });
 }
 
-export function sendHit(targetPeerId) {
+export function sendHit(targetPeerId, dmg) {
   if (!connected || !ws || ws.readyState !== ws.OPEN) return;
-  ws.send(JSON.stringify({ t: "hit", id: targetPeerId }));
+  ws.send(JSON.stringify({ t: "hit", id: targetPeerId, dmg: dmg ?? 15 }));
 }
 
 /**
@@ -219,6 +277,23 @@ export function sendHit(targetPeerId) {
 export function sendStart() {
   if (!connected || !ws || ws.readyState !== ws.OPEN) return;
   ws.send(JSON.stringify({ t: "start" }));
+}
+
+/**
+ * Host-only: update the room's match settings (mode / duration / cops). The
+ * server stores them and broadcasts a "config" to every member so non-hosts see
+ * the chosen settings read-only in the lobby.
+ */
+export function sendConfig(config) {
+  if (!connected || !ws || ws.readyState !== ws.OPEN) return;
+  ws.send(
+    JSON.stringify({
+      t: "config",
+      mode: config.mode,
+      duration: config.duration,
+      cops: config.cops,
+    })
+  );
 }
 
 /** Disconnect + clear all peer state. */

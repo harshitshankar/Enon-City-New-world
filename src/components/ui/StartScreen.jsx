@@ -6,7 +6,7 @@ import { initAudio, startMusic } from "../../lib/audio";
  * Explains what NEON CITY is, the controls, and the core gameplay loop, then
  * launches the game (and, on desktop, captures the mouse for FPS-style aim).
  */
-export default function StartScreen({ onMultiplayer }) {
+export default function StartScreen({ onMultiplayer, onCustomize }) {
   const startGame = useGameStore((s) => s.startGame);
   const isMobile = useGameStore((s) => s.isMobile);
 
@@ -77,6 +77,16 @@ export default function StartScreen({ onMultiplayer }) {
           }}
         >
           🌐 MULTIPLAYER
+        </button>
+        <button
+          onClick={onCustomize}
+          className="px-8 py-4 rounded-full font-extrabold text-base text-white active:scale-95 transition-transform"
+          style={{
+            background: "linear-gradient(90deg,#7CFF6B,#3ba8ff)",
+            boxShadow: "0 0 24px rgba(124,255,107,0.5)",
+          }}
+        >
+          🎨 CUSTOMIZE
         </button>
       </div>
 

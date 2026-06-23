@@ -146,6 +146,10 @@ export default function DayNightCycle() {
     // direction from origin toward the sun (normalized)
     c.sunDir.set(sx, sy, sz).normalize();
 
+    // Publish a darkness factor (0 bright day .. 1 deep night) for light-decal
+    // systems. Smoothed around the horizon so reflections fade in/out gently.
+    worldState.darkness = THREE.MathUtils.clamp(-sy / 45, 0, 1);
+
     if (sunRef.current) {
       // Keep the light close to the player so the tight shadow frustum always
       // covers the visible area (crisper shadows, less GPU work).

@@ -100,6 +100,19 @@ export default function MiniMap() {
           ctx.strokeStyle = "#ffffff";
           ctx.lineWidth = 1;
           ctx.stroke();
+          // direction arrow: which way the peer faces (peer.rot). The canvas is
+          // rotated by the player's heading already, so peer heading maps in
+          // directly. A small chevron just outside the ring.
+          if (typeof b.rot === "number") {
+            const ax = Math.sin(b.rot);
+            const ay = Math.cos(b.rot);
+            ctx.strokeStyle = col;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(bx + ax * (r + 1), by + ay * (r + 1));
+            ctx.lineTo(bx + ax * (r + 5), by + ay * (r + 5));
+            ctx.stroke();
+          }
         } else {
           ctx.beginPath();
           ctx.arc(bx, by, r, 0, Math.PI * 2);
@@ -117,6 +130,12 @@ export default function MiniMap() {
       ctx.lineTo(cx + 4, cy + 5);
       ctx.closePath();
       ctx.fill();
+
+      // OWN the blip buffer: clear AFTER drawing so this batch is consumed.
+      // Multiple systems push blips at varying rates; without an owner they
+      // accumulate and smear the radar. Clearing here means each radar frame
+      // shows exactly the blips produced since the last clear.
+      worldState.blips.length = 0;
 
       raf = requestAnimationFrame(draw);
     };

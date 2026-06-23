@@ -3,6 +3,8 @@ import { useFrame } from "@react-three/fiber";
 import { RigidBody, CuboidCollider } from "@react-three/rapier";
 import * as THREE from "three";
 import { worldState } from "../../store/useGameStore";
+import Plaza from "./Plaza";
+import StreetLightGlow from "./StreetLightGlow";
 
 /**
  * World
@@ -144,6 +146,8 @@ export default function World() {
       <Buildings buildings={buildings} />
       <Trees trees={trees} />
       <StreetLights />
+      <StreetLightGlow />
+      <Plaza />
       <WorldBounds />
     </group>
   );

@@ -373,8 +373,8 @@ export default function Car({ id, position = [0, 1, 0], color = "#c0392b", aiPat
         tmp.dummy.scale.setScalar(s);
         tmp.dummy.updateMatrix();
         pm.setMatrixAt(pi, tmp.dummy.matrix);
-        // blue -> white -> faint
-        const col = k < 0.5 ? 0x66ccff : 0xaee4ff;
+        // NoS flame colour: blue (fresh/hot) -> red (cooling) gradient.
+        const col = k < 0.45 ? 0x66ccff : k < 0.8 ? 0xff5a5a : 0xff8a3c;
         pm.setColorAt(pi, _tmpColor.setHex(col));
         pi++;
       }
@@ -589,17 +589,18 @@ export default function Car({ id, position = [0, 1, 0], color = "#c0392b", aiPat
         </group>
 
         <group ref={nosFxRef} visible={false}>
+          {/* NoS flames: blue core cones + red outer haze (bluish-red gradient) */}
           <mesh position={[-0.55, 0, -2.4]} rotation={[Math.PI / 2, 0, 0]}>
             <coneGeometry args={[0.25, 1.4, 8]} />
-            <meshBasicMaterial color="#3ba8ff" toneMapped={false} transparent opacity={0.85} />
+            <meshBasicMaterial color="#4ab8ff" toneMapped={false} transparent opacity={0.9} />
           </mesh>
           <mesh position={[0.55, 0, -2.4]} rotation={[Math.PI / 2, 0, 0]}>
             <coneGeometry args={[0.25, 1.4, 8]} />
-            <meshBasicMaterial color="#3ba8ff" toneMapped={false} transparent opacity={0.85} />
+            <meshBasicMaterial color="#4ab8ff" toneMapped={false} transparent opacity={0.9} />
           </mesh>
           <mesh position={[0, 0, -3]} rotation={[Math.PI / 2, 0, 0]}>
             <coneGeometry args={[0.45, 1.8, 8]} />
-            <meshBasicMaterial color="#aee4ff" toneMapped={false} transparent opacity={0.5} />
+            <meshBasicMaterial color="#ff4a4a" toneMapped={false} transparent opacity={0.5} />
           </mesh>
         </group>
       </group>

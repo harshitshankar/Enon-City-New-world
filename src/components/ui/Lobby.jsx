@@ -7,6 +7,7 @@ import {
   peers,
   leaveRoom,
   sendStart,
+  sendConfig,
 } from "../../lib/net";
 import { initAudio, startMusic } from "../../lib/audio";
 
@@ -16,12 +17,23 @@ import { initAudio, startMusic } from "../../lib/audio";
  * Flow: Create Room (host) or Join Room (enter a code). Once in a room the
  * screen shows the shareable code + live roster (real peers from the server,
  * filled out to 8 slots so it's clear how many can still join). The host (the
- * room creator) clicks START to drop everyone into the shared city.
+ * room creator) picks the match settings (Team DM 2v2 / 4v4, duration, cops)
+ * and clicks START to drop everyone into the shared city together.
  *
  * This is layered on top of the existing solo StartScreen flow: if multiplayer
  * isn't engaged, the normal single-player ENTER button still works.
+ *
+ * Teams are assigned by the server by join-order parity and arrive in the
+ * roster; we look up our own entry to know which team we're on.
  */
-export default function Lobby({ onClose }) {
+const TEAM_COLOR = { A: "#ff5a6a", B: "#3ba8ff" };
+const DURATIONS = [5, 10];
+const MODES = [
+  { id: "tdm2", label: "TEAM DM · 2v2", short: "2v2" },
+  { id: "tdm4", label: "TEAM DM · 4v4", short: "4v4" },
+];
+
+export default function Lobby({ onClose, onCustomize }) {
   const playerName = useGameStore((s) => s.playerName);
   const setPlayerName = useGameStore((s) => s.setPlayerName);
   const setRoomId = useGameStore((s) => s.setRoomId);
@@ -29,6 +41,9 @@ export default function Lobby({ onClose }) {
   const setMultiplayer = useGameStore((s) => s.setMultiplayer);
   const setLobbyPhase = useGameStore((s) => s.setLobbyPhase);
   const startGame = useGameStore((s) => s.startGame);
+  const setTeam = useGameStore((s) => s.setTeam);
+  const setMatchConfig = useGameStore((s) => s.setMatchConfig);
+  const beginMatch = useGameStore((s) => s.beginMatch);
 
   const [mode, setMode] = useState("home"); // home | create | join | room
   const [code, setCode] = useState("");
@@ -36,32 +51,50 @@ export default function Lobby({ onClose }) {
   const [isHost, setIsHost] = useState(false);
   const [error, setError] = useState("");
   const [myId, setMyId] = useState(null);
+  // Match config mirrored locally; host edits + broadcasts via sendConfig.
+  const [cfg, setCfg] = useState({ mode: "tdm4", duration: 10, cops: false });
 
   // Wire up networking callbacks once.
   useEffect(() => {
-    on("roster", (players, selfId, room) => {
+    on("roster", (players, selfId, room, config) => {
       setMyId(selfId);
       setRoomId(room);
       setRosterView(players);
       setRoster(players);
+      if (config) {
+        setCfg(config);
+        setMatchConfig(config);
+      }
       setMode("room");
     });
     on("join", (peer) => {
-      setRosterView((r) => [...r, { id: peer.id, name: peer.name }]);
+      setRosterView((r) => [...r, { id: peer.id, name: peer.name, team: peer.team }]);
     });
     on("leave", (id) => {
       setRosterView((r) => r.filter((p) => p.id !== id));
     });
     on("error", (msg) => setError(msg));
+    // Host changed match settings — apply read-only for everyone.
+    on("config", (config) => {
+      setCfg(config);
+      setMatchConfig(config);
+    });
     // When the host starts the game, the server tells EVERYONE to launch.
-    // Non-host clients handle it here; the host launches in handleStart below.
-    on("start", () => {
+    // We resolve our own team from the roster here (it's authoritative), set
+    // the match clock + config, then enter the city.
+    on("start", (_room, roster, config) => {
+      if (Array.isArray(roster)) {
+        const me = roster.find((p) => p.id === myId);
+        if (me) setTeam(me.team);
+      }
+      if (config) setMatchConfig(config);
+      beginMatch();
       initAudio();
       startMusic();
       setLobbyPhase("playing");
       startGame();
     });
-  }, [setRoomId, setRoster, setLobbyPhase, startGame]);
+  }, [setRoomId, setRoster, setLobbyPhase, startGame, setMatchConfig, setTeam, beginMatch, myId]);
 
   const handleCreate = () => {
     setError("");
@@ -83,17 +116,27 @@ export default function Lobby({ onClose }) {
     joinRoom(code.toUpperCase(), playerName || "Player");
   };
 
+  // Host edits a setting -> update local + push to the server for the room.
+  const updateCfg = (partial) => {
+    const next = { ...cfg, ...partial };
+    setCfg(next);
+    setMatchConfig(next);
+    sendConfig(next);
+  };
+
   const handleStart = () => {
     // Host: tell the server to broadcast "start" to the whole room. The server
     // echoes it to everyone (including us), and the shared on("start") handler
-    // above launches each client into the game. This guarantees ALL players —
-    // not just the host — enter the city together.
+    // above launches each client into the game with the agreed config + teams.
+    // Push the latest config right before start so stragglers are in sync.
+    sendConfig(cfg);
     sendStart();
   };
 
   const handleLeave = () => {
     leaveRoom();
     setMultiplayer(false);
+    setTeam(null);
     setMode("home");
     setRosterView([]);
     onClose?.();
@@ -104,6 +147,8 @@ export default function Lobby({ onClose }) {
     const p = rosterView[i];
     return p ? { ...p, status: "In" } : { status: "Empty" };
   });
+
+  const selectedMode = MODES.find((m) => m.id === cfg.mode) || MODES[1];
 
   return (
     <div
@@ -136,7 +181,7 @@ export default function Lobby({ onClose }) {
         MULTIPLAYER
       </h2>
       <p className="text-cyan-200/70 text-xs tracking-[0.3em] mt-1">
-        1–8 PLAYERS · SHARED CITY
+        1–8 PLAYERS · TEAM DEATHMATCH
       </p>
 
       {error && (
@@ -157,6 +202,12 @@ export default function Lobby({ onClose }) {
           className="w-full hud-panel rounded-lg px-4 py-3 text-white text-base outline-none"
           style={{ background: "rgba(20,10,35,0.6)" }}
         />
+        <button
+          onClick={onCustomize}
+          className="mt-2 text-cyan-200/80 hover:text-white text-xs tracking-widest"
+        >
+          🎨 CUSTOMIZE YOUR CHARACTER
+        </button>
       </div>
 
       {mode === "home" && (
@@ -221,7 +272,7 @@ export default function Lobby({ onClose }) {
             </div>
           </div>
 
-          {/* Roster: 8 slots */}
+          {/* Roster: 8 slots, with team colour dots */}
           <div className="mt-4 grid grid-cols-2 gap-2">
             {slots.map((s, i) => (
               <div
@@ -229,8 +280,12 @@ export default function Lobby({ onClose }) {
                 className="hud-panel rounded-lg px-3 py-2 text-left flex items-center gap-2"
               >
                 <span
-                  className="w-2 h-2 rounded-full"
-                  style={{ background: s.status === "In" ? "#3be86a" : "#4a3a5a" }}
+                  className="w-2.5 h-2.5 rounded-full"
+                  style={{
+                    background:
+                      s.status === "In" ? (TEAM_COLOR[s.team] || "#3be86a") : "#4a3a5a",
+                    boxShadow: s.status === "In" ? `0 0 6px ${TEAM_COLOR[s.team] || "#3be86a"}` : "none",
+                  }}
                 />
                 <span className={s.status === "In" ? "text-white text-sm" : "text-purple-200/40 text-sm"}>
                   {s.status === "In" ? s.name : "Empty slot"}
@@ -243,13 +298,85 @@ export default function Lobby({ onClose }) {
             live {Object.keys(peers).length === 1 ? "player" : "players"}
           </div>
 
+          {/* Match settings: host edits, others read-only */}
+          <div className="mt-4 hud-panel rounded-xl p-4 text-left">
+            <div className="text-pink-200/80 text-[10px] tracking-widest mb-2">MATCH SETTINGS</div>
+
+            <div className="text-purple-200/60 text-[10px] tracking-widest mb-1">MODE</div>
+            <div className="flex gap-2 mb-3">
+              {MODES.map((m) => {
+                const active = cfg.mode === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    disabled={!isHost}
+                    onClick={() => updateCfg({ mode: m.id })}
+                    className="flex-1 px-2 py-2 rounded-lg text-[11px] font-bold tracking-wide transition-transform active:scale-95 disabled:opacity-70"
+                    style={{
+                      background: active ? "linear-gradient(90deg,#ff5ac8,#ff8a3c)" : "rgba(40,20,55,0.7)",
+                      color: "#fff",
+                      boxShadow: active ? "0 0 14px rgba(255,90,200,0.5)" : "none",
+                      cursor: isHost ? "pointer" : "default",
+                    }}
+                  >
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="text-purple-200/60 text-[10px] tracking-widest mb-1">DURATION</div>
+            <div className="flex gap-2 mb-3">
+              {DURATIONS.map((d) => {
+                const active = cfg.duration === d;
+                return (
+                  <button
+                    key={d}
+                    disabled={!isHost}
+                    onClick={() => updateCfg({ duration: d })}
+                    className="flex-1 px-2 py-2 rounded-lg text-xs font-bold transition-transform active:scale-95 disabled:opacity-70"
+                    style={{
+                      background: active ? "linear-gradient(90deg,#3ba8ff,#9b59ff)" : "rgba(40,20,55,0.7)",
+                      color: "#fff",
+                      boxShadow: active ? "0 0 14px rgba(59,168,255,0.5)" : "none",
+                      cursor: isHost ? "pointer" : "default",
+                    }}
+                  >
+                    {d} MIN
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-purple-200/60 text-[10px] tracking-widest">COPS</span>
+              <button
+                disabled={!isHost}
+                onClick={() => updateCfg({ cops: !cfg.cops })}
+                className="px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wide transition-transform active:scale-95 disabled:opacity-70"
+                style={{
+                  background: cfg.cops ? "linear-gradient(90deg,#ffd24d,#ff8a3c)" : "rgba(40,20,55,0.7)",
+                  color: "#fff",
+                  cursor: isHost ? "pointer" : "default",
+                }}
+              >
+                {cfg.cops ? "ON" : "OFF"}
+              </button>
+            </div>
+            {!isHost && (
+              <div className="text-purple-200/40 text-[10px] mt-2">
+                Host controls match settings.
+              </div>
+            )}
+          </div>
+
           {isHost ? (
             <button
               onClick={handleStart}
               className="mt-5 w-full px-6 py-4 rounded-xl font-extrabold text-white text-lg active:scale-95 transition-transform"
               style={{ background: "linear-gradient(90deg,#ff5ac8,#ff8a3c)", boxShadow: "0 0 30px rgba(255,90,200,0.6)" }}
             >
-              ▶ START GAME
+              ▶ START {selectedMode.short}
             </button>
           ) : (
             <div className="mt-5 text-purple-200/70 text-sm">
@@ -261,8 +388,8 @@ export default function Lobby({ onClose }) {
 
       {mode === "home" && (
         <p className="mt-8 text-purple-300/40 text-[10px] tracking-widest max-w-sm">
-          Tip: the host creates a room, shares the code, and everyone enters it
-          before pressing START. You all drop into the same shared city.
+          Tip: the host creates a room, shares the code, picks the mode, and
+          everyone enters before pressing START. Teams are auto-balanced.
         </p>
       )}
     </div>
