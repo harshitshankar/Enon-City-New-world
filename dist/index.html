@@ -4193,5 +4193,30 @@ void main() {
   </head>
   <body>
     <div id="root"></div>
+    <!-- Global error catcher: surface any JS error visibly so a blank screen
+         is never silent. Removed once the cause is fixed. -->
+    <script>
+      (function () {
+        var box;
+        function show(label, msg) {
+          if (!box) {
+            box = document.createElement("div");
+            box.style.cssText =
+              "position:fixed;inset:0;z-index:99999;background:#1a0b2e;" +
+              "color:#ff5cc8;font:14px/1.5 monospace;padding:24px;white-space:pre-wrap;" +
+              "overflow:auto;";
+            document.body.appendChild(box);
+          }
+          box.textContent += label + ": " + msg + "\n\n";
+        }
+        window.addEventListener("error", function (e) {
+          show("ERROR", (e.message || "Unknown") + (e.filename ? "\n  at " + e.filename + ":" + e.lineno : ""));
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e.reason;
+          show("PROMISE", (r && (r.stack || r.message)) || String(r));
+        });
+      })();
+    </script>
   </body>
 </html>
