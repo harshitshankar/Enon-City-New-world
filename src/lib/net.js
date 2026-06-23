@@ -43,6 +43,7 @@ const handlers = {
   leave: null, // (peerId) => void
   state: null, // (peerId, state) => void
   hit: null, // (peerId, byId) => void
+  start: null, // (room) => void  — host started the game; everyone launches
   error: null, // (msg) => void
   open: null, // () => void
 };
@@ -148,6 +149,11 @@ export function joinRoom(code, name) {
       case "hit":
         handlers.hit?.(msg.id, msg.by);
         break;
+      case "start":
+        // Host launched the shared game — every client (including the host
+        // echo) flips into playing mode.
+        handlers.start?.(msg.room);
+        break;
       case "leave":
         delete peers[msg.id];
         handlers.leave?.(msg.id);
@@ -204,6 +210,15 @@ export function broadcastSelf() {
 export function sendHit(targetPeerId) {
   if (!connected || !ws || ws.readyState !== ws.OPEN) return;
   ws.send(JSON.stringify({ t: "hit", id: targetPeerId }));
+}
+
+/**
+ * Host-only: tell the server to broadcast a "start" to everyone in the room so
+ * all clients launch into the shared city together.
+ */
+export function sendStart() {
+  if (!connected || !ws || ws.readyState !== ws.OPEN) return;
+  ws.send(JSON.stringify({ t: "start" }));
 }
 
 /** Disconnect + clear all peer state. */

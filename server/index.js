@@ -118,6 +118,13 @@ wss.on("connection", (ws) => {
         broadcast(self.room, { t: "hit", id: msg.id, by: self.id });
         break;
       }
+      case "start": {
+        // Host started the game — tell EVERY member (including the host echo)
+        // to launch into the shared city.
+        if (!self.room) return;
+        broadcast(self.room, { t: "start", room: self.room });
+        break;
+      }
       case "leave": {
         if (self.room) removeMember(self.room, self.id);
         self.room = null;

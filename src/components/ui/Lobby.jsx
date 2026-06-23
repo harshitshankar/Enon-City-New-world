@@ -6,6 +6,7 @@ import {
   on,
   peers,
   leaveRoom,
+  sendStart,
 } from "../../lib/net";
 import { initAudio, startMusic } from "../../lib/audio";
 
@@ -52,7 +53,15 @@ export default function Lobby({ onClose }) {
       setRosterView((r) => r.filter((p) => p.id !== id));
     });
     on("error", (msg) => setError(msg));
-  }, [setRoomId, setRoster]);
+    // When the host starts the game, the server tells EVERYONE to launch.
+    // Non-host clients handle it here; the host launches in handleStart below.
+    on("start", () => {
+      initAudio();
+      startMusic();
+      setLobbyPhase("playing");
+      startGame();
+    });
+  }, [setRoomId, setRoster, setLobbyPhase, startGame]);
 
   const handleCreate = () => {
     setError("");
@@ -75,11 +84,11 @@ export default function Lobby({ onClose }) {
   };
 
   const handleStart = () => {
-    // Audio must be unlocked by a user gesture.
-    initAudio();
-    startMusic();
-    setLobbyPhase("playing");
-    startGame();
+    // Host: tell the server to broadcast "start" to the whole room. The server
+    // echoes it to everyone (including us), and the shared on("start") handler
+    // above launches each client into the game. This guarantees ALL players —
+    // not just the host — enter the city together.
+    sendStart();
   };
 
   const handleLeave = () => {
