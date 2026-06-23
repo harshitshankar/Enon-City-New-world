@@ -1,0 +1,315 @@
+import { useRef, useMemo, useEffect } from "react";
+import { useFrame } from "@react-three/fiber";
+import { RigidBody, CapsuleCollider } from "@react-three/rapier";
+import * as THREE from "three";
+
+import {
+  useGameStore,
+  inputState,
+  worldState,
+  consumeInteract,
+  markCrime,
+  WEAPON_META,
+} from "../../store/useGameStore";
+import useKeyboard from "../../hooks/useKeyboard";
+import { nearestVehicle } from "../../lib/registry";
+import { requestProjectile } from "../../lib/events";
+import { playSfx } from "../../lib/audio";
+import { HALF } from "../world/World";
+import CharacterMesh from "./CharacterMesh";
+
+const SPEED = 6.5;
+const RUN_SPEED = 9;
+
+export default function Player() {
+  useKeyboard();
+
+  const bodyRef = useRef();
+  const visualRef = useRef();
+  const charRef = useRef();
+
+  const activeVehicle = useGameStore((s) => s.activeVehicle);
+  const cameraMode = useGameStore((s) => s.cameraMode);
+
+  const walkPhase = useRef(0);
+  const fireCooldown = useRef(0);
+  const yaw = useRef(0); // facing heading
+  const stepTimer = useRef(0);
+  const airborne = useRef(false);
+
+  // Reusable temp vectors (no GC).
+  const tmp = useMemo(
+    () => ({
+      camDir: new THREE.Vector3(),
+      shootDir: new THREE.Vector3(),
+      muzzle: new THREE.Vector3(),
+      lin: new THREE.Vector3(),
+    }),
+    []
+  );
+
+  const driving = !!activeVehicle;
+
+  useEffect(() => {
+    if (!driving && bodyRef.current) {
+      bodyRef.current.wakeUp();
+    }
+  }, [driving]);
+
+  /* ---- DEATH / RESPAWN -------------------------------------------------
+   * When health hits 0, kick the player out of any vehicle, drop them on the
+   * FAR side of the map (diagonally opposite their current position), reset
+   * health + wanted, and clear velocity. A small death SFX + explosion sells
+   * the moment. `spawnId` bumps so other systems can react if needed.
+   * ------------------------------------------------------------------- */
+  const health = useGameStore((s) => s.health);
+  const dead = useRef(false);
+  useEffect(() => {
+    const st = useGameStore.getState();
+    if (health <= 0 && !dead.current) {
+      dead.current = true;
+      // If they died inside a car, the Car explodes on its own and calls
+      // exitVehicle(); make sure we're on foot before relocating.
+      if (st.activeVehicle) st.exitVehicle();
+      // respawn diagonally opposite the current position, clamped to the map.
+      const px = worldState.playerPos.x;
+      const pz = worldState.playerPos.z;
+      const lim = HALF - 8;
+      const nx = THREE.MathUtils.clamp(-px + (Math.random() - 0.5) * 12, -lim, lim);
+      const nz = THREE.MathUtils.clamp(-pz + (Math.random() - 0.5) * 12, -lim, lim);
+      // give the body a beat to settle before teleport (Rapier needs the body
+      // to exist + be on foot). Wait one frame.
+      requestAnimationFrame(() => {
+        const body = bodyRef.current;
+        if (body) {
+          body.setTranslation({ x: nx, y: 2.5, z: nz }, true);
+          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        }
+        playSfx("explosion");
+        useGameStore.getState().respawn();
+        dead.current = false;
+      });
+    }
+  }, [health]);
+
+  useFrame((state, rawDelta) => {
+    const ts = useGameStore.getState().timeScale;
+    const delta = Math.min(rawDelta, 0.05) * ts;
+    const body = bodyRef.current;
+    if (!body) return;
+
+    /* ------------------------------------------------------------------ */
+    /*  DRIVING                                                            */
+    /* ------------------------------------------------------------------ */
+    if (driving) {
+      if (visualRef.current) visualRef.current.visible = false;
+      body.setTranslation({ x: 0, y: -50, z: 0 }, false);
+      body.setLinvel({ x: 0, y: 0, z: 0 }, false);
+      worldState.playerPos.x = worldState.vehiclePos.x;
+      worldState.playerPos.z = worldState.vehiclePos.z;
+      worldState.playerRot = worldState.vehicleHeading;
+      handleInteract(true);
+      return;
+    }
+    if (visualRef.current) visualRef.current.visible = true;
+
+    /* ------------------------------------------------------------------ */
+    /*  ON-FOOT MOVEMENT — camera-relative, accurate                       */
+    /* ------------------------------------------------------------------ */
+    const cam = state.camera;
+    // Camera forward direction projected onto the ground plane.
+    cam.getWorldDirection(tmp.camDir);
+    tmp.camDir.y = 0;
+    tmp.camDir.normalize();
+
+    // Build a clean basis from the camera:
+    //   forward = where the camera looks (ground projected)
+    //   right   = 90° clockwise of forward
+    const fwdX = tmp.camDir.x;
+    const fwdZ = tmp.camDir.z;
+    const rightX = -fwdZ; // perpendicular
+    const rightZ = fwdX;
+
+    // Joystick / WASD:  move.z = -1 (up/forward), move.x = +1 (right)
+    const ix = inputState.move.x; // left(-)/right(+)
+    const iz = inputState.move.z; // forward(-)/back(+)
+    const moving = inputState.moveActive && (ix !== 0 || iz !== 0);
+
+    const cur = body.linvel();
+    const aiming = inputState.aim || cameraMode === "aim";
+    const speed = aiming ? SPEED * 0.75 : RUN_SPEED;
+
+    if (moving) {
+      // World move dir = forward*(-iz) + right*(ix)
+      let mx = fwdX * -iz + rightX * ix;
+      let mz = fwdZ * -iz + rightZ * ix;
+      const len = Math.hypot(mx, mz) || 1;
+      mx /= len;
+      mz /= len;
+      tmp.lin.set(mx * speed, cur.y, mz * speed);
+      // Face movement direction unless aiming (then face camera).
+      if (!aiming) yaw.current = Math.atan2(mx, mz);
+      walkPhase.current += delta * 14;
+      // footstep cadence
+      stepTimer.current -= rawDelta;
+      if (stepTimer.current <= 0) {
+        playSfx("footstep");
+        stepTimer.current = aiming ? 0.42 : 0.32;
+      }
+    } else {
+      tmp.lin.set(0, cur.y, 0);
+      stepTimer.current = 0;
+    }
+
+    // When aiming, the character faces the same way the camera looks.
+    if (aiming) yaw.current = Math.atan2(fwdX, fwdZ);
+
+    body.setLinvel(tmp.lin, true);
+
+    // jump
+    if (inputState.jump) {
+      if (Math.abs(cur.y) < 0.8) {
+        body.setLinvel({ x: tmp.lin.x, y: 8.5, z: tmp.lin.z }, true);
+        playSfx("jump");
+        airborne.current = true;
+      }
+      inputState.jump = false;
+    }
+    // landing detection
+    if (airborne.current && cur.y <= 0.1 && Math.abs(cur.y) < 0.5) {
+      airborne.current = false;
+      playSfx("land");
+    } else if (cur.y > 1) {
+      airborne.current = true;
+    }
+
+    // Smoothly rotate visual mesh toward yaw.
+    if (visualRef.current) {
+      const cury = visualRef.current.rotation.y;
+      let diff = yaw.current - cury;
+      diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+      visualRef.current.rotation.y = cury + diff * Math.min(1, delta * 16);
+    }
+
+    // Telemetry.
+    const pos = body.translation();
+    worldState.playerPos.x = pos.x;
+    worldState.playerPos.y = pos.y;
+    worldState.playerPos.z = pos.z;
+    worldState.playerRot = yaw.current;
+
+    /* ------------------------------------------------------------------ */
+    /*  SHOOTING                                                           */
+    /* ------------------------------------------------------------------ */
+    fireCooldown.current -= rawDelta; // real time for fire rate
+    if (inputState.shoot && fireCooldown.current <= 0) {
+      tryShoot(state);
+    }
+
+    handleInteract(false);
+  });
+
+  function tryShoot(state) {
+    const st = useGameStore.getState();
+    const w = st.currentWeapon;
+    const meta = WEAPON_META[w];
+
+    if (!st.consumeAmmo()) {
+      // Clip empty -> auto-reload from reserve, then keep firing.
+      const a = st.ammo[w];
+      if (a && a.reserve > 0) {
+        st.reloadCurrent();
+        playSfx("reload");
+        fireCooldown.current = 0.6; // short reload pause
+      } else {
+        playSfx("empty");
+        fireCooldown.current = 0.4;
+      }
+      return;
+    }
+    fireCooldown.current = meta.fireRate;
+
+    // Shoot straight along the camera forward direction (screen center).
+    const cam = state.camera;
+    cam.getWorldDirection(tmp.shootDir);
+    tmp.shootDir.normalize();
+
+    // Muzzle slightly in front of the player at chest height.
+    tmp.muzzle.set(
+      worldState.playerPos.x + tmp.shootDir.x * 0.8,
+      worldState.playerPos.y + 1.2,
+      worldState.playerPos.z + tmp.shootDir.z * 0.8
+    );
+
+    worldState.aimDir.x = tmp.shootDir.x;
+    worldState.aimDir.y = tmp.shootDir.y;
+    worldState.aimDir.z = tmp.shootDir.z;
+
+    requestProjectile({
+      type: w,
+      pos: [tmp.muzzle.x, tmp.muzzle.y, tmp.muzzle.z],
+      dir: [tmp.shootDir.x, tmp.shootDir.y, tmp.shootDir.z],
+      owner: "player",
+    });
+
+    playSfx(w === "rocket" ? "rocket" : w === "bow" ? "bow" : "shot");
+    st.addWanted(0.04);
+    markCrime();
+  }
+
+  function handleInteract(isDriving) {
+    const st = useGameStore.getState();
+    if (isDriving) {
+      if (consumeInteract()) {
+        st.exitVehicle();
+        playSfx("door");
+        const vx = worldState.vehiclePos.x;
+        const vz = worldState.vehiclePos.z;
+        // Exit beside the vehicle. For a helicopter keep the player at the
+        // heli's current altitude (clamped) so they don't teleport to the
+        // ground mid-flight; for a car, drop to ground level.
+        const flying = worldState.vehicleType === "heli";
+        const ey = flying ? Math.max(1.4, worldState.vehiclePos.y - 0.5) : 1.4;
+        bodyRef.current.setTranslation({ x: vx + 2.8, y: ey, z: vz }, true);
+        bodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      }
+      return;
+    }
+    const pos = bodyRef.current.translation();
+    const near = nearestVehicle(pos.x, pos.z, 5, pos.y);
+    const curNear = st.nearVehicle;
+    if (near && curNear !== near.id) st.setNearVehicle(near.id);
+    else if (!near && curNear) st.setNearVehicle(null);
+
+    if (near && consumeInteract()) {
+      near.onHijack?.();
+      st.enterVehicle(near.id);
+      playSfx("door");
+    }
+  }
+
+  const aiming = inputState.aim || cameraMode === "aim";
+
+  return (
+    <RigidBody
+      ref={bodyRef}
+      colliders={false}
+      mass={1}
+      position={[6, 2, 6]}
+      enabledRotations={[false, false, false]}
+      linearDamping={0.25}
+      friction={0.2}
+      canSleep={false}
+      ccd
+    >
+      <CapsuleCollider args={[0.5, 0.4]} position={[0, 1, 0]} />
+      <group ref={visualRef}>
+        <CharacterMesh
+          ref={charRef}
+          walkPhase={walkPhase.current}
+          holding={aiming}
+        />
+      </group>
+    </RigidBody>
+  );
+}

@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Build output
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
+.env.local
+*.local
+
+# Gradle / Android build (kept out of client repo)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

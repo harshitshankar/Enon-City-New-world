@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fullscreen theme: no title bar, no action bar, matches the game's dark background. -->
+    <style name="Theme.NeonCity" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">@color/neon_pink</item>
+        <item name="colorPrimaryDark">@color/dark_bg</item>
+        <item name="android:windowBackground">@color/dark_bg</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+    </style>
+
+    <style name="Theme.NeonCity.Fullscreen" parent="Theme.NeonCity">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+</resources>

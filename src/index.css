@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0a0510;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+canvas {
+  display: block;
+  touch-action: none;
+}
+
+/* Hide the OS cursor over the canvas while playing on desktop — the in-game
+   crosshair takes its place (pointer-lock style aiming/camera). */
+body.is-playing-desktop canvas {
+  cursor: none;
+}
+
+.touch-none {
+  touch-action: none;
+}
+
+/* HUD font glow helper */
+.neon-text {
+  text-shadow: 0 0 8px rgba(255, 90, 200, 0.8), 0 0 16px rgba(120, 80, 255, 0.5);
+}
+
+.hud-panel {
+  backdrop-filter: blur(6px);
+  background: rgba(20, 10, 35, 0.45);
+  border: 1px solid rgba(255, 120, 220, 0.25);
+}
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.pulse-glow {
+  animation: pulseGlow 1.6s ease-in-out infinite;
+}
+
+@keyframes rotateDevice {
+  0%,
+  40% {
+    transform: rotate(0deg);
+  }
+  60%,
+  100% {
+    transform: rotate(90deg);
+  }
+}
+.rotate-hint {
+  animation: rotateDevice 2.2s ease-in-out infinite;
+}
