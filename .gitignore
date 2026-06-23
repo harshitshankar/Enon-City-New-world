@@ -2,8 +2,8 @@
 node_modules/
 server/node_modules/
 
-# Build output
-dist/
+# Build output (kept tracked so Render can serve it as static)
+# dist/
 
 # Logs
 *.log
