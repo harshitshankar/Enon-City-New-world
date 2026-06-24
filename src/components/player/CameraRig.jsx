@@ -66,8 +66,10 @@ export default function CameraRig() {
         vp.y + up,
         vp.z - Math.cos(vh) * back
       );
-      // smooth follow
-      camera.position.lerp(desired, Math.min(1, delta * (flying ? 3 : 4)));
+      // smooth follow — helis track heading a touch faster than cars so the
+      // chase cam doesn't lag behind a yaw and make strafing FEEL inverted
+      // (a lagging camera is the usual culprit for "I press A and it goes right").
+      camera.position.lerp(desired, Math.min(1, delta * (flying ? 5 : 4)));
       // look a little ahead + down for helis to aid landing
       if (flying) {
         lookAt.set(vp.x + Math.sin(vh) * 6, vp.y - 4, vp.z + Math.cos(vh) * 6);

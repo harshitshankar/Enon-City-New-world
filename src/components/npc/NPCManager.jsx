@@ -144,7 +144,11 @@ export default function NPCManager() {
     const gunfireNearby = sinceCrime < 1.5;
 
     const blips = worldState.blips;
-    blips.length = 0;
+    // NOTE: do NOT clear blips here. The MiniMap owns the blip buffer and clears
+    // it once AFTER it draws each radar frame. If multiple systems clear it, the
+    // one that runs later wipes the others' blips — that was making peers/team
+    // blips disappear (they're pushed by RemotePlayers which runs after us).
+    // Each system only PUSHES; MiniMap drains.
 
     peds.current.forEach((p, i) => {
       switch (p.state) {

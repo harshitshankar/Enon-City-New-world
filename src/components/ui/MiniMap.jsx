@@ -1,11 +1,23 @@
 import { useRef, useEffect } from "react";
 import { worldState, useGameStore } from "../../store/useGameStore";
 import { HALF, BLOCK, GRID, ROAD_W } from "../world/World";
+import { vehicleRegistry } from "../../lib/registry";
 
 /**
  * Circular minimap (bottom-left). Draws the road grid relative to the player,
- * the player arrow, and hostile/ped blips. Rendered to a 2D canvas on a rAF
- * loop so it never causes React re-renders.
+ * the player arrow, vehicles (incl. helicopters), and hostile/ped/peer blips.
+ *
+ * Rotation convention:
+ *   The game's heading is h = atan2(x, z) where forward-world = (sin h, cos h).
+ *   We map world deltas (dx, dz) to minimap screen coords so the player's
+ *   forward points UP (canvas -y) and the player's right points RIGHT (canvas
+ *   +x). Solving that linear map gives:
+ *       sx = -cos h * dx + sin h * dz
+ *       sy = -sin h * dx - cos h * dz
+ *   (The old code used ctx.rotate(-rot) on raw world->screen, which put forward
+ *   pointing DOWN/sideways — so the player arrow and peer chevrons were off.)
+ *
+ * Rendered to a 2D canvas on a rAF loop; never causes React re-renders.
  */
 export default function MiniMap() {
   const canvasRef = useRef();
@@ -28,6 +40,14 @@ export default function MiniMap() {
       const px = worldState.playerPos.x;
       const pz = worldState.playerPos.z;
       const rot = worldState.playerRot;
+      const cr = Math.cos(rot);
+      const sr = Math.sin(rot);
+      // world delta -> minimap screen (forward up, right = +x)
+      const toScreen = (wx, wz) => {
+        const dx = wx - px;
+        const dz = wz - pz;
+        return [-cr * dx + sr * dz, -sr * dx - cr * dz];
+      };
 
       ctx.clearRect(0, 0, SIZE, SIZE);
 
@@ -41,37 +61,78 @@ export default function MiniMap() {
       ctx.fillStyle = "#120a1e";
       ctx.fillRect(0, 0, SIZE, SIZE);
 
-      // rotate world so player heading points up
-      ctx.translate(cx, cy);
-      ctx.rotate(-rot);
-
-      const toScreen = (wx, wz) => [(wx - px) * SCALE, (wz - pz) * SCALE];
+      // Translate to the radar centre. toScreen returns offsets from centre
+      // already, so we just add cx/cy when drawing.
+      const R = SIZE / 2 - 2;
 
       // road grid lines
       ctx.strokeStyle = "rgba(255,120,220,0.25)";
       ctx.lineWidth = ROAD_W * SCALE * 0.5;
       for (let i = 0; i <= GRID; i++) {
         const c = -HALF + i * BLOCK;
-        // horizontal
-        let [x1, y1] = toScreen(-HALF, c);
-        let [x2, y2] = toScreen(HALF, c);
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-        // vertical
-        [x1, y1] = toScreen(c, -HALF);
-        [x2, y2] = toScreen(c, HALF);
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
+        // horizontal road (world z = c)
+        {
+          const [x1, y1] = toScreen(-HALF, c);
+          const [x2, y2] = toScreen(HALF, c);
+          ctx.beginPath();
+          ctx.moveTo(cx + x1, cy + y1);
+          ctx.lineTo(cx + x2, cy + y2);
+          ctx.stroke();
+        }
+        // vertical road (world x = c)
+        {
+          const [x1, y1] = toScreen(c, -HALF);
+          const [x2, y2] = toScreen(c, HALF);
+          ctx.beginPath();
+          ctx.moveTo(cx + x1, cy + y1);
+          ctx.lineTo(cx + x2, cy + y2);
+          ctx.stroke();
+        }
       }
 
-      // blips
+      // ---- VEHICLE blips (cars + helicopters) ----
+      // Show every live vehicle so you can spot a heli to grab. Helis get a
+      // distinct rotor glyph; the car you're driving is skipped (that's "you").
+      const drivingId = useGameStore.getState().activeVehicle;
+      ctx.lineWidth = 1.4;
+      for (const v of vehicleRegistry.values()) {
+        if (v.destroyed && v.destroyed()) continue;
+        if (v.id === drivingId) continue; // don't draw our own ride
+        const vp = v.getPos(_vTmp);
+        // helicopters are only useful if airborne or on a pad; still show all.
+        const isHeli = typeof v.id === "string" && v.id.startsWith("heli");
+        const [bx, by] = toScreen(vp.x, vp.z);
+        if (Math.hypot(bx, by) > R) continue;
+        if (isHeli) {
+          // small cyan "H" rotor glyph
+          ctx.strokeStyle = "#7be0ff";
+          ctx.fillStyle = "#7be0ff";
+          ctx.beginPath();
+          ctx.arc(cx + bx, cy + by, 3.4, 0, Math.PI * 2);
+          ctx.stroke();
+          // rotor cross
+          ctx.beginPath();
+          ctx.moveTo(cx + bx - 5, cy + by);
+          ctx.lineTo(cx + bx + 5, cy + by);
+          ctx.moveTo(cx + bx, cy + by - 5);
+          ctx.lineTo(cx + bx, cy + by + 5);
+          ctx.stroke();
+        } else {
+          // car: small amber triangle
+          ctx.fillStyle = "#ffcc55";
+          ctx.beginPath();
+          ctx.moveTo(cx + bx, cy + by - 3.2);
+          ctx.lineTo(cx + bx - 2.8, cy + by + 2.6);
+          ctx.lineTo(cx + bx + 2.8, cy + by + 2.6);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      // ---- other blips (peds / hostiles / pickups / peers) ----
       for (const b of worldState.blips) {
         const [bx, by] = toScreen(b.x, b.z);
-        if (Math.hypot(bx, by) > SIZE / 2) continue;
+        if (Math.hypot(bx, by) > R) continue;
         let col = "#7be0ff";
         let r = 2;
         if (b.type === "hostile") {
@@ -90,39 +151,47 @@ export default function MiniMap() {
         }
         ctx.fillStyle = col;
         if (b.type === "health" || b.type === "ammo") {
-          // draw as a small square so pickups stand out
-          ctx.fillRect(bx - r, by - r, r * 2, r * 2);
+          ctx.fillRect(cx + bx - r, cy + by - r, r * 2, r * 2);
         } else if (b.type === "peer") {
           // ring so players are clearly distinct from peds/hostiles
           ctx.beginPath();
-          ctx.arc(bx, by, r, 0, Math.PI * 2);
+          ctx.arc(cx + bx, cy + by, r, 0, Math.PI * 2);
           ctx.fill();
           ctx.strokeStyle = "#ffffff";
           ctx.lineWidth = 1;
           ctx.stroke();
-          // direction arrow: which way the peer faces (peer.rot). The canvas is
-          // rotated by the player's heading already, so peer heading maps in
-          // directly. A small chevron just outside the ring.
+          // direction chevron: peer.rot uses atan2(x,z) like our heading, so the
+          // SAME toScreen mapping applies to its forward vector. We draw the
+          // chevron from the ring outward along that forward.
           if (typeof b.rot === "number") {
-            const ax = Math.sin(b.rot);
-            const ay = Math.cos(b.rot);
+            const pcr = Math.cos(b.rot);
+            const psr = Math.sin(b.rot);
+            // peer forward world = (sin rot, cos rot); pass it through toScreen
+            // to get its facing direction on the (player-relative) minimap, then
+            // draw a chevron from the ring outward along it.
+            const [fdx, fdy] = toScreen(b.x + psr, b.z + pcr);
+            const dirx = fdx - bx;
+            const diry = fdy - by;
+            const dl = Math.hypot(dirx, diry) || 1;
+            const nx = dirx / dl;
+            const ny = diry / dl;
             ctx.strokeStyle = col;
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = 1.6;
             ctx.beginPath();
-            ctx.moveTo(bx + ax * (r + 1), by + ay * (r + 1));
-            ctx.lineTo(bx + ax * (r + 5), by + ay * (r + 5));
+            ctx.moveTo(cx + bx + nx * (r + 1), cy + by + ny * (r + 1));
+            ctx.lineTo(cx + bx + nx * (r + 5), cy + by + ny * (r + 5));
             ctx.stroke();
           }
         } else {
           ctx.beginPath();
-          ctx.arc(bx, by, r, 0, Math.PI * 2);
+          ctx.arc(cx + bx, cy + by, r, 0, Math.PI * 2);
           ctx.fill();
         }
       }
 
       ctx.restore();
 
-      // player arrow (always center, pointing up)
+      // player arrow (always centre, pointing up = our facing)
       ctx.fillStyle = "#ff5ac8";
       ctx.beginPath();
       ctx.moveTo(cx, cy - 6);
@@ -132,9 +201,8 @@ export default function MiniMap() {
       ctx.fill();
 
       // OWN the blip buffer: clear AFTER drawing so this batch is consumed.
-      // Multiple systems push blips at varying rates; without an owner they
-      // accumulate and smear the radar. Clearing here means each radar frame
-      // shows exactly the blips produced since the last clear.
+      // MiniMap is the SOLE owner of the clear (see NPCManager) — if two systems
+      // clear, the later one wipes the others' blips and peers/team vanish.
       worldState.blips.length = 0;
 
       raf = requestAnimationFrame(draw);
@@ -165,3 +233,6 @@ export default function MiniMap() {
     </div>
   );
 }
+
+// scratch vector reused by the vehicle loop (no GC)
+const _vTmp = { x: 0, y: 0, z: 0 };
