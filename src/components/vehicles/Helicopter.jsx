@@ -280,7 +280,9 @@ export default function Helicopter({ id, position = [0, 6, 0] }) {
     if (tailRotorRef.current) tailRotorRef.current.rotation.x = rotorSpin.current * 1.6;
 
     if (driverRef.current) {
-      driverRef.current.visible = isPlayerHeli;
+      // Hide the pilot so its head doesn't poke above the cockpit canopy
+      // in chase-cam view (heli is player-only, never has a visible pilot).
+      driverRef.current.visible = false;
     }
   });
 

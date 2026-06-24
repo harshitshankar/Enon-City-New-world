@@ -393,7 +393,9 @@ export default function Car({ id, position = [0, 1, 0], color = "#c0392b", aiPat
     });
 
     if (driverRef.current) {
-      driverRef.current.visible = isPlayerCar || occupiedNPC.current;
+      // Hide the player's own driver avatar so its head doesn't poke above
+      // the cabin roof in chase-cam view. Keep NPC traffic drivers visible.
+      driverRef.current.visible = occupiedNPC.current;
     }
   });
 
