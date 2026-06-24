@@ -103,13 +103,19 @@ export default function NPCManager() {
           if (p.state === STATE.DEAD) return;
           p.hp -= dmg;
           if (p.hp <= 0 || dmg >= 100) {
+            // Killed: ragdoll with the kill impulse, credit the kill. The body
+            // stays visible (lying down) through RAGDOLL then DEAD so the player
+            // sees the result of the shot — it does NOT vanish.
             p.state = STATE.RAGDOLL;
             p.ragdollT = 0;
             p.vel.set(impulse[0] * 0.4, impulse[1] * 0.4, impulse[2] * 0.4);
             useGameStore.getState().addKill?.();
           } else {
+            // Wounded but alive: flee from the shooter. Even with no wanted
+            // level, a ped who gets shot panics — this is the fix for "I shoot
+            // them and they keep walking as if nothing happened".
             p.state = STATE.PANIC;
-            p.timer = 5;
+            p.timer = 6;
             p.vel.set(impulse[0] * 0.15, 0, impulse[2] * 0.15);
           }
         },
@@ -131,6 +137,11 @@ export default function NPCManager() {
     const px = worldState.playerPos.x;
     const pz = worldState.playerPos.z;
     const wanted = useGameStore.getState().wanted;
+    // Sense nearby gunfire: if the player fired very recently (lastCrime within
+    // ~1.5s) and is close, peds flee even with no wanted level — gunfire is
+    // scary regardless of whether the cops care yet.
+    const sinceCrime = worldState.clock - worldState.lastCrime;
+    const gunfireNearby = sinceCrime < 1.5;
 
     const blips = worldState.blips;
     blips.length = 0;
@@ -147,7 +158,8 @@ export default function NPCManager() {
           const sp = p.idle ? 0 : 1.3;
           p.vel.set(Math.sin(p.heading) * sp, 0, Math.cos(p.heading) * sp);
           const d = Math.hypot(p.pos.x - px, p.pos.z - pz);
-          if (d < 7 && wanted > 0) {
+          // Flee if the player is wanted, OR if gunfire just happened nearby.
+          if (d < 9 && (wanted > 0 || gunfireNearby)) {
             p.state = STATE.PANIC;
             p.timer = 4;
           }
@@ -173,9 +185,10 @@ export default function NPCManager() {
             p.pos.y = 0;
             p.vel.set(0, 0, 0);
           }
-          // Keep the ragdoll visible for a moment so the kill registers visually,
-          // then transition to a short fade before respawn.
-          if (p.ragdollT > 3) {
+          // Keep the ragdoll visible for a beat so the kill registers visually,
+          // then settle into the flat DEAD pose (a visible corpse) before the
+          // respawn relocate.
+          if (p.ragdollT > 2) {
             p.state = STATE.DEAD;
             p.respawnT = 0;
           }
@@ -183,15 +196,17 @@ export default function NPCManager() {
         }
         case STATE.DEAD: {
           p.respawnT += delta;
-          // Respawn faster (was 7s) so the city never looks depopulated, and
-          // respawn NEAR the player so fresh peds appear where the action is
-          // rather than vanishing for ages. After 3s, relocate + revive.
-          if (p.respawnT > 3) {
+          // The corpse lies flat and visible for a while (was 3s) so kills feel
+          // real — then the ped respawns NEAR the player so the city stays
+          // populated where the action is. 8s gives a satisfying corpse duration
+          // without depopulating the streets for too long.
+          if (p.respawnT > 8) {
             const sp = sidewalkSpawnNear(px, pz);
             p.pos.set(sp[0], 0, sp[1]);
             p.hp = 30;
             p.state = STATE.WANDER;
             p.vel.set(0, 0, 0);
+            p.idle = false;
           }
           break;
         }
@@ -207,23 +222,36 @@ export default function NPCManager() {
       const dead = p.state === STATE.DEAD;
       const swing = ragdoll || dead ? 0 : Math.sin(p.phase) * 0.5;
 
-      // body
-      const bob = ragdoll || dead ? -0.45 : Math.sin(p.phase * 2) * 0.03;
-      dummy.position.set(p.pos.x, p.pos.y + 0.9 + bob, p.pos.z);
-      if (ragdoll || dead) dummy.rotation.set(Math.PI / 2, p.heading, p.ragdollT);
-      else dummy.rotation.set(0, p.heading, 0);
-      dummy.scale.set(1, 1, dead ? 0.5 : 1);
+      // body — when downed, the body lies flat on the ground (rotated 90° on X)
+      // so it reads as a corpse instead of disappearing. Use a small settle
+      // offset so the box rests on the ground plane, not floating.
+      if (ragdoll || dead) {
+        // lying flat: body box is 0.7 tall, so its half-height is 0.35; rotate
+        // onto its back and drop it to ground level.
+        dummy.position.set(p.pos.x, p.pos.y + 0.18, p.pos.z);
+        dummy.rotation.set(Math.PI / 2, p.heading, p.ragdollT);
+        dummy.scale.set(1, 1, 1);
+      } else {
+        const bob = Math.sin(p.phase * 2) * 0.03;
+        dummy.position.set(p.pos.x, p.pos.y + 0.9 + bob, p.pos.z);
+        dummy.rotation.set(0, p.heading, 0);
+        dummy.scale.set(1, 1, 1);
+      }
       dummy.updateMatrix();
       bm.setMatrixAt(i, dummy.matrix);
       bm.setColorAt(i, p.color);
 
-      // head
-      dummy.position.set(
-        p.pos.x,
-        p.pos.y + 1.55 + (ragdoll || dead ? -0.7 : bob),
-        p.pos.z
-      );
-      dummy.scale.set(1, 1, 1);
+      // head — when downed, the head rests beside the body on the ground.
+      if (ragdoll || dead) {
+        dummy.position.set(p.pos.x, p.pos.y + 0.2, p.pos.z);
+        dummy.rotation.set(Math.PI / 2, p.heading, p.ragdollT);
+        dummy.scale.set(1, 1, 1);
+      } else {
+        const bob2 = Math.sin(p.phase * 2) * 0.03;
+        dummy.position.set(p.pos.x, p.pos.y + 1.55 + bob2, p.pos.z);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.set(1, 1, 1);
+      }
       dummy.updateMatrix();
       hm.setMatrixAt(i, dummy.matrix);
       hm.setColorAt(i, p.skin);

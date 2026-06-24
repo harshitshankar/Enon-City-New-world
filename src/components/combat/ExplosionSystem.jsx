@@ -5,7 +5,14 @@ import * as THREE from "three";
 import { spawnQueue } from "../../lib/events";
 import { useGameStore, markCrime, worldState } from "../../store/useGameStore";
 import { npcRegistry, vehicleRegistry } from "../../lib/registry";
+import { peers, sendHit } from "../../lib/net";
 import { playSfx } from "../../lib/audio";
+
+/**
+ * Per-explosion damage dealt to a human player caught inside the blast radius.
+ * Falls off with distance so a grazing hit hurts less than a direct one.
+ */
+const PLAYER_BLAST_DMG = 90;
 
 /**
  * Singleton screen-flash element: created lazily, reused for every nearby
@@ -150,6 +157,51 @@ export default function ExplosionSystem() {
           const nz = (dz / (d || 1)) * force;
           npc.onHit?.(100, [nx, 12, nz]);
           useGameStore.getState().addScore(50);
+        }
+      }
+      // DAMAGE THE LOCAL PLAYER if they're caught in the blast (distance-gated
+      // + falloff). This is what makes car/heli explosions lethal when you're
+      // standing next to them — previously only the *occupant* took damage.
+      {
+        const dx = worldState.playerPos.x - e.pos.x;
+        const dz = worldState.playerPos.z - e.pos.z;
+        const d = Math.hypot(dx, dz);
+        if (d < radius) {
+          const fall = 1 - d / radius; // 0..1
+          const st = useGameStore.getState();
+          // Don't double-charge the driver who already took the on-exit hit; the
+          // Car/Helicopter explode() applies a flat penalty to the occupant.
+          if (!st.activeVehicle) {
+            st.damage(PLAYER_BLAST_DMG * (0.45 + 0.55 * fall));
+          }
+        }
+      }
+      // DAMAGE REMOTE PLAYERS caught in the blast (PvP / TDM). Friendly fire is
+      // still arbitrated on the victim's side (RemotePlayers.jsx ignores ally
+      // hits), so we just send the damage with falloff. This is what makes
+      // rockets + car bombs score kills in team deathmatch.
+      for (const id in peers) {
+        const peer = peers[id];
+        if (!peer || peer.health <= 0) continue;
+        const dx = (peer.pos[0] || 0) - e.pos.x;
+        const dz = (peer.pos[2] || 0) - e.pos.z;
+        const d = Math.hypot(dx, dz);
+        if (d < radius) {
+          const fall = 1 - d / radius;
+          const pdmg = Math.round(PLAYER_BLAST_DMG * (0.45 + 0.55 * fall));
+          // Friendly-fire off: skip teammates (the victim would ignore it anyway).
+          const me = useGameStore.getState().team;
+          if (me && peer.team === me) continue;
+          sendHit(peer.id, pdmg);
+          // Credit the kill locally if this blast is lethal — same convention as
+          // direct bullet hits, so the shooter's tally stays consistent.
+          if (peer.health - pdmg <= 0) {
+            const st = useGameStore.getState();
+            st.addKill();
+            st.addTeamKill();
+          } else {
+            useGameStore.getState().registerHit();
+          }
         }
       }
       // CHAIN REACTION: blast nearby cars too (defer one frame to avoid

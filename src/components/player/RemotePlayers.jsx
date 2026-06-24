@@ -56,14 +56,19 @@ export default function RemotePlayers() {
    * sees it drop in sync. */
   useEffect(() => {
     on("hit", (victimId, byId, dmg) => {
-      if (victimId === getSelfId()) {
-        const st = useGameStore.getState();
-        // Friendly fire off in team mode: ignore hits from a teammate.
-        const me = st.team;
-        const attackerPeer = byId != null ? peers[byId] : null;
-        if (me && attackerPeer && attackerPeer.team === me) return;
-        st.damage(dmg ?? 15, byId);
-      }
+      // Type-safe compare: ids travel through JSON but the peers map coerces
+      // keys to strings, so compare as strings to never miss a match.
+      if (String(victimId) !== String(getSelfId())) return;
+      const st = useGameStore.getState();
+      // Already dead? ignore — respawn handles the reset.
+      if (st.health <= 0) return;
+      // Friendly fire off in team mode: ignore hits from a teammate. Guard with
+      // a null check on BOTH teams so a peer whose team hasn't synced yet is
+      // treated as an enemy (damage applies) instead of silently ignored.
+      const me = st.team;
+      const attackerPeer = byId != null ? peers[byId] : null;
+      if (me && attackerPeer && attackerPeer.team && attackerPeer.team === me) return;
+      st.damage(dmg ?? 15, byId);
     });
   }, []);
 
@@ -95,18 +100,32 @@ export default function RemotePlayers() {
       // get-or-create slot
       let slot = cache.current.get(id);
       if (!slot) {
-        slot = { pos: new THREE.Vector3(), rot: 0, applied: "", lastKills: -1 };
+        slot = {
+          pos: new THREE.Vector3(),
+          net: { x: 0, y: 0, z: 0 }, // raw network target (pre-smoothing)
+          rot: 0,
+          applied: "",
+          lastKills: -1,
+        };
         // initialise at the peer's exact pos to avoid a long slide-in
         slot.pos.set(peer.pos[0] || 0, peer.pos[1] || 0, peer.pos[2] || 0);
+        slot.net.x = peer.pos[0] || 0;
+        slot.net.y = peer.pos[1] || 0;
+        slot.net.z = peer.pos[2] || 0;
         cache.current.set(id, slot);
       }
 
       child.visible = true;
 
-      // interpolate toward reported pose (tightened for responsive blips)
-      const tx = peer.pos[0] || 0;
-      const ty = peer.pos[1] || 0; // CharacterMesh is foot-origin'd; no raise
-      const tz = peer.pos[2] || 0;
+      // Capture the RAW network target BEFORE we overwrite peer.pos below.
+      // net.js writes the latest server pose into peer.pos at ~15 Hz; we snap a
+      // copy so smoothing always chases the true target, not its own output.
+      slot.net.x = peer.pos[0] || 0;
+      slot.net.y = peer.pos[1] || 0; // CharacterMesh is foot-origin'd; no raise
+      slot.net.z = peer.pos[2] || 0;
+      const tx = slot.net.x;
+      const ty = slot.net.y;
+      const tz = slot.net.z;
       const k = Math.min(1, delta * 14);
       slot.pos.x += (tx - slot.pos.x) * k;
       slot.pos.y += (ty - slot.pos.y) * k;
@@ -117,6 +136,15 @@ export default function RemotePlayers() {
 
       child.position.copy(slot.pos);
       child.rotation.y = slot.rot;
+
+      // Publish the SMOOTHED position into peer.pos so the ProjectileSystem hit
+      // test uses the same position the shooter SEES on screen. Without this,
+      // bullets test against the raw network position (only ~15 Hz) which can lag
+      // up to ~0.6m behind the rendered model — making visually-connected shots
+      // register as misses. slot.net keeps the true target safe for next frame.
+      peer.pos[0] = slot.pos.x;
+      peer.pos[1] = slot.pos.y;
+      peer.pos[2] = slot.pos.z;
 
       // Downed peers sink + fade so it reads as "dead" until they respawn.
       const dead = peer.health <= 0;

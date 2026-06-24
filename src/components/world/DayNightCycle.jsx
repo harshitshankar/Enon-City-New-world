@@ -212,8 +212,8 @@ export default function DayNightCycle() {
         intensity={1.5}
         target={sunTarget}
         position={[60, 80, -60]}
-        shadow-mapSize-width={isMobile ? 1024 : 2048}
-        shadow-mapSize-height={isMobile ? 1024 : 2048}
+        shadow-mapSize-width={isMobile ? 1024 : 1536}
+        shadow-mapSize-height={isMobile ? 1024 : 1536}
         shadow-camera-near={1}
         shadow-camera-far={200}
         shadow-camera-left={-55}

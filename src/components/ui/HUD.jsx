@@ -28,6 +28,8 @@ export default function HUD() {
   // Frame-polled telemetry (NoS / speed) without re-rendering React tree.
   const nosBarRef = useRef();
   const speedRef = useRef();
+  const hitMarkerRef = useRef();
+  const lastHitFlash = useRef(0);
   useEffect(() => {
     let raf;
     const tick = () => {
@@ -36,6 +38,22 @@ export default function HUD() {
       }
       if (speedRef.current) {
         speedRef.current.textContent = `${Math.round(worldState.speedKmh)}`;
+      }
+      // Hit marker: flash a red "X" on the crosshair whenever registerHit()
+      // bumps hitFlash (i.e. a shot connected with a player/NPC). Fades over
+      // ~250ms so rapid hits keep it lit. This is the visual confirmation the
+      // shooter needs to KNOW their bullets are landing.
+      if (hitMarkerRef.current) {
+        const hf = useGameStore.getState().hitFlash;
+        if (hf !== lastHitFlash.current) {
+          lastHitFlash.current = hf;
+          hitMarkerRef.current.style.transition = "none";
+          hitMarkerRef.current.style.opacity = "1";
+          // force reflow then fade
+          void hitMarkerRef.current.offsetWidth;
+          hitMarkerRef.current.style.transition = "opacity 0.25s ease-out";
+          hitMarkerRef.current.style.opacity = "0";
+        }
       }
       raf = requestAnimationFrame(tick);
     };
@@ -70,6 +88,41 @@ export default function HUD() {
             <span
               className="absolute bg-pink-300"
               style={{ top: "50%", right: 0, height: 2, width: "40%", transform: "translateY(-50%)", boxShadow: "0 0 6px #ff5ac8" }}
+            />
+          </div>
+          {/* Hit marker: a red X that flashes when a shot connects with a
+              player or NPC. Driven by the hitFlash store counter in the rAF
+              loop above. The opacity starts at 1 and fades to 0. */}
+          <div
+            ref={hitMarkerRef}
+            className="absolute"
+            style={{
+              left: "50%",
+              top: "50%",
+              width: 30,
+              height: 30,
+              transform: "translate(-50%,-50%)",
+              opacity: 0,
+              pointerEvents: "none",
+            }}
+          >
+            <span
+              className="absolute"
+              style={{
+                left: "50%", top: "50%", width: 22, height: 3,
+                background: "#ff2a3a",
+                transform: "translate(-50%,-50%) rotate(45deg)",
+                boxShadow: "0 0 8px #ff2a3a",
+              }}
+            />
+            <span
+              className="absolute"
+              style={{
+                left: "50%", top: "50%", width: 22, height: 3,
+                background: "#ff2a3a",
+                transform: "translate(-50%,-50%) rotate(-45deg)",
+                boxShadow: "0 0 8px #ff2a3a",
+              }}
             />
           </div>
         </div>
@@ -163,6 +216,23 @@ export default function HUD() {
             <span className="text-pink-200 text-sm ml-1">KM/H</span>
           </div>
         </>
+      )}
+
+      {/* ---------- Helicopter flight control hint (desktop, non-mobile) ---------- */}
+      {driving && !isMobile && worldState.vehicleType === "heli" && (
+        <div
+          className="absolute hud-panel rounded-lg px-3 py-2 text-[11px] leading-relaxed pointer-events-none"
+          style={{ right: 16, bottom: 96, maxWidth: 230 }}
+        >
+          <div className="text-cyan-200 font-extrabold tracking-widest mb-1">✈ HELI CONTROLS</div>
+          <div className="text-white/85">
+            <b className="text-green-300">Space / X</b> Ascend &nbsp;·&nbsp; <b className="text-yellow-300">Ctrl / Z</b> Descend
+          </div>
+          <div className="text-white/85">
+            <b className="text-white">WASD</b> Pitch/Strafe &nbsp;·&nbsp; <b className="text-blue-300">Shift</b> Boost
+          </div>
+          <div className="text-white/65">Mouse: yaw &nbsp;·&nbsp; Wheel: up/down</div>
+        </div>
       )}
 
       {/* ---------- Interaction prompt ---------- */}

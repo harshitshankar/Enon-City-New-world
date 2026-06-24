@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { inputState } from "../store/useGameStore";
+import { inputState, worldState } from "../store/useGameStore";
 import { useGameStore } from "../store/useGameStore";
 import { playSfx } from "../lib/audio";
 
@@ -47,6 +47,24 @@ export default function useKeyboard() {
         case "ControlRight":
         case "KeyC":
           inputState.down = true; // helicopter descend
+          e.preventDefault();
+          break;
+        case "KeyZ":
+          // Alternate descend key — Ctrl can be hijacked by browser shortcuts or
+          // the OS on some laptops, so Z is a reliable fallthrough.
+          inputState.down = true;
+          break;
+        case "KeyX":
+          // Alternate ascend key — pairs with Z for ascend/descend on laptops
+          // where Space/Ctrl feel awkward mid-flight.
+          inputState.up = true;
+          break;
+        case "PageUp":
+          inputState.up = true;
+          e.preventDefault();
+          break;
+        case "PageDown":
+          inputState.down = true;
           e.preventDefault();
           break;
         case "KeyF":
@@ -98,7 +116,35 @@ export default function useKeyboard() {
         case "ControlLeft":
         case "ControlRight":
         case "KeyC":
-          inputState.down = false;
+        case "KeyZ":
+          // Clear descend only when NONE of the descend keys remain held, so the
+          // flag can't get stuck if the player rolls from Ctrl to Z.
+          if (
+            !keys["ControlLeft"] &&
+            !keys["ControlRight"] &&
+            !keys["KeyC"] &&
+            !keys["KeyZ"] &&
+            !keys["PageDown"]
+          ) {
+            inputState.down = false;
+          }
+          break;
+        case "KeyX":
+        case "PageUp":
+          if (!keys["KeyX"] && !keys["PageUp"] && !keys["Space"]) {
+            inputState.up = false;
+          }
+          break;
+        case "PageDown":
+          if (
+            !keys["PageDown"] &&
+            !keys["ControlLeft"] &&
+            !keys["ControlRight"] &&
+            !keys["KeyC"] &&
+            !keys["KeyZ"]
+          ) {
+            inputState.down = false;
+          }
           break;
         case "KeyQ":
           inputState.weaponWheel = false;
@@ -112,8 +158,23 @@ export default function useKeyboard() {
 
     const onWheel = (e) => {
       const st = useGameStore.getState();
+      // While flying a helicopter, the mouse wheel ascends/descends — much
+      // easier on a laptop trackpad than reaching for Ctrl/Space. Otherwise it
+      // cycles weapons as before.
+      if (st.activeVehicle && worldState.vehicleType === "heli") {
+        if (e.deltaY < 0) inputState.up = true;
+        else inputState.down = true;
+        // clear shortly after so it's a nudge, not held forever
+        clearTimeout(wheelHeliT);
+        wheelHeliT = setTimeout(() => {
+          inputState.up = false;
+          inputState.down = false;
+        }, 140);
+        return;
+      }
       st.cycleWeapon(e.deltaY > 0 ? 1 : -1);
     };
+    let wheelHeliT = null;
 
     const onMouseDown = (e) => {
       // Ignore the synthetic click that accompanies acquiring/releasing pointer

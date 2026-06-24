@@ -161,10 +161,21 @@ export default function ProjectileSystem() {
       // NPC proximity collision — SWEPT segment-vs-sphere test.
       // The segment is the bullet's travel this frame; the sphere is centred at
       // the NPC torso (foot y + 1). This catches fast bullets regardless of FPS.
+      // A cheap squared-distance broad-phase skips NPCs nowhere near the bullet's
+      // path (the big win: 90 peds -> usually <6 tested per bullet per frame).
       if (!hit) {
+        // bullet's midpoint this frame — the centre of its travel segment
+        const mx = (p.prevPos.x + p.pos.x) * 0.5;
+        const mz = (p.prevPos.z + p.pos.z) * 0.5;
+        // max reach from the midpoint = half segment + hit radius (+ slack)
+        const reach = 0.5 * Math.hypot(p.pos.x - p.prevPos.x, p.pos.z - p.prevPos.z) + 4;
+        const reach2 = reach * reach;
         for (const npc of npcRegistry.values()) {
           if (!npc.alive) continue;
           const np = npc.getPos(tmpDir);
+          // broad phase: skip if clearly outside the segment's reach
+          const ddx = np.x - mx, ddz = np.z - mz;
+          if (ddx * ddx + ddz * ddz > reach2) continue;
           // sphere centre = torso, radius generous so hits feel fair (~1.5u)
           const cx = np.x, cy = np.y + 1, cz = np.z;
           const R = 1.5;
@@ -184,34 +195,51 @@ export default function ProjectileSystem() {
       // your bullets now hit other players instead of passing through them. The
       // hit is reported to the victim over the net (sendHit), and the shooter
       // counts the kill locally when this bullet is the lethal one.
+      //
+      // Network lag compensation: the hit sphere is generous (R=2.2) because
+      // peer.pos is only updated at ~15 Hz (~66ms lag). At running speed (9 m/s)
+      // the real position can be up to ~0.6 m ahead of where the server last
+      // reported. A large radius ensures shots that LOOK like hits on screen
+      // actually register as hits.
       if (!hit) {
         const pdmg = PLAYER_DMG[p.type] || 15;
+        const R_PEER = 2.2; // generous hit radius for network-synced positions
         for (const id in peers) {
           const peer = peers[id];
           if (!peer || peer.health <= 0) continue;
           const cx = peer.pos[0] || 0;
-          const cy = (peer.pos[1] || 0) + 1; // torso
+          const cy = (peer.pos[1] || 0) + 1; // torso height
           const cz = peer.pos[2] || 0;
-          const R = 1.4;
+          const R = R_PEER;
           const t = segSphereT(p.prevPos, p.pos, cx, cy, cz, R * R);
           if (t >= 0 && t <= 1) {
             hit = true;
             hitPos = new THREE.Vector3().lerpVectors(p.prevPos, p.pos, t);
             const st = useGameStore.getState();
-            // Friendly fire off in team mode: report nothing for an ally hit.
+            // Friendly fire off in team mode: skip allies. Guard against
+            // undefined team (e.g. peer hasn't received the start roster yet)
+            // by only blocking when BOTH sides have a valid, matching team.
             const me = st.team;
-            const ally = me && peer.team === me;
+            const them = peer.team;
+            const ally = me && them && me === them;
             if (ally) break;
             // Report the hit to the victim over the net so their health drops.
             sendHit(peer.id, pdmg);
+            // Optimistically decrement the victim's health LOCALLY so subsequent
+            // hits can detect a lethal blow. The shooter's `peers[].health` was
+            // never updated before (only the victim's own store moved), so the
+            // lethal check below always saw the stale 100-HP value and kills
+            // almost never credited. Clamp at 0; the next real `state` packet
+            // from the victim reconciles this.
+            peer.health = Math.max(0, (peer.health || 100) - pdmg);
             st.addScore(25);
-            // Lethal hit: the shooter credits the kill immediately. We predict
-            // the victim's health locally so there's no dispute or delay.
-            if ((peer.health - pdmg) <= 0) {
+            // Always bump the hit flash so the crosshair gives feedback — this
+            // is the ONLY visual cue the shooter gets that their shot landed.
+            st.registerHit();
+            // Lethal hit: the shooter credits the kill immediately.
+            if (peer.health <= 0) {
               st.addKill();
               st.addTeamKill();
-            } else {
-              st.registerHit(); // "hit" telemetry for the HUD crosshair feedback
             }
             break;
           }
@@ -220,9 +248,16 @@ export default function ProjectileSystem() {
 
       // Vehicle collision — SWEPT segment-vs-cylinder (horizontal radius + Y window).
       if (!hit) {
+        const mx = (p.prevPos.x + p.pos.x) * 0.5;
+        const mz = (p.prevPos.z + p.pos.z) * 0.5;
+        const reach = 0.5 * Math.hypot(p.pos.x - p.prevPos.x, p.pos.z - p.prevPos.z) + 4;
+        const reach2 = reach * reach;
         for (const v of vehicleRegistry.values()) {
           if (v.destroyed && v.destroyed()) continue;
           const vp = v.getPos(tmpDir);
+          // broad phase: skip vehicles nowhere near the segment
+          const ddx = vp.x - mx, ddz = vp.z - mz;
+          if (ddx * ddx + ddz * ddz > reach2) continue;
           // sample a few points along the segment against the car's hit volume
           const stepCount = 3;
           for (let s = 0; s <= stepCount; s++) {
