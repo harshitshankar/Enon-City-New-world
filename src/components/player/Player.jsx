@@ -294,11 +294,33 @@ export default function Player() {
     cam.getWorldDirection(tmp.shootDir);
     tmp.shootDir.normalize();
 
-    // Muzzle slightly in front of the player at chest height.
+    // Muzzle point: ray-march FORWARD from the camera position along the aim
+    // direction until we're just past the player's chest, then place the
+    // projectile there. Because the projectile starts on the camera->target
+    // ray and keeps travelling along it, the tracer always passes through the
+    // crosshair (screen centre) — in BOTH foot and aim modes.
+    //
+    // The old code spawned at playerPos.y+1.2 along camDir, but in non-aim mode
+    // the camera sits back+up with a shoulder offset and tilts downward, so
+    // that spawn missed the crosshair and ploughed into the ground at close
+    // range. This fixes "I can only hit things while aiming".
+    const pp = worldState.playerPos;
+    const chestY = pp.y + 1.2;
+    let d = 0.8;
+    const dx0 = cam.position.x, dy0 = cam.position.y, dz0 = cam.position.z;
+    for (let i = 0; i < 48; i++) {
+      const hx = dx0 + tmp.shootDir.x * d - pp.x;
+      const hz = dz0 + tmp.shootDir.z * d - pp.z;
+      const hy = dy0 + tmp.shootDir.y * d;
+      // stop once we're at/just past the player's chest along the aim line
+      if (hx * hx + hz * hz < 1.2 && hy > chestY - 1.6) break;
+      d += 0.35;
+    }
+    const muzzleDist = Math.max(d, 1.2);
     tmp.muzzle.set(
-      worldState.playerPos.x + tmp.shootDir.x * 0.8,
-      worldState.playerPos.y + 1.2,
-      worldState.playerPos.z + tmp.shootDir.z * 0.8
+      dx0 + tmp.shootDir.x * muzzleDist,
+      Math.max(0.5, dy0 + tmp.shootDir.y * muzzleDist),
+      dz0 + tmp.shootDir.z * muzzleDist
     );
 
     worldState.aimDir.x = tmp.shootDir.x;

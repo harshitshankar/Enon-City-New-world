@@ -492,13 +492,14 @@ export default function Car({ id, position = [0, 1, 0], color = "#c0392b", aiPat
       <group ref={groupRef}>
         <mesh position={[0, 0.15, 0]} castShadow>
           <boxGeometry args={[2, 0.7, 4.2]} />
-          <meshStandardMaterial color={police ? "#1a2740" : color} flatShading metalness={0.2} roughness={0.45} />
+          {/* Glossy car paint: higher metalness + lower roughness for a sheen */}
+          <meshStandardMaterial color={police ? "#1a2740" : color} flatShading metalness={0.4} roughness={0.3} />
         </mesh>
         {police && (
           <>
             <mesh position={[0, 0.15, 0]}>
               <boxGeometry args={[2.02, 0.4, 1.6]} />
-              <meshStandardMaterial color="#e8e8ee" flatShading />
+              <meshStandardMaterial color="#e8e8ee" flatShading metalness={0.3} roughness={0.4} />
             </mesh>
             <group ref={sirenRef} position={[0, 1.12, -0.2]}>
               <mesh position={[-0.35, 0, 0]}>

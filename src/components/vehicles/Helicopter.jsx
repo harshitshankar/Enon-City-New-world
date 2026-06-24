@@ -157,7 +157,13 @@ export default function Helicopter({ id, position = [0, 6, 0] }) {
       // --- input ---
       const pitchIn = THREE.MathUtils.clamp(inputState.move.z, -1, 1); // W/S -> forward/back
       const strafeIn = THREE.MathUtils.clamp(inputState.move.x, -1, 1); // A/D -> strafe
-      const yawIn = -inputState.look.x; // mouse swipe -> yaw
+      // Yaw uses the SAME sign convention as the on-foot camera + car steering
+      // (both do `heading -= look.x`): moving the mouse / swiping RIGHT turns
+      // the heli to the RIGHT on screen. The chase camera follows `heading`, so
+      // a positive look.x must DECREASE heading to turn right — matching how the
+      // rest of the game turns. (Previously `+= look.x`, which yawed the heli
+      // the OPPOSITE way to the camera and felt inverted: left went right.)
+      const yawIn = -inputState.look.x;
       inputState.look.x = 0;
       inputState.look.y = 0;
       const ascend = inputState.up ? 1 : 0; // Space
@@ -181,16 +187,25 @@ export default function Helicopter({ id, position = [0, 6, 0] }) {
       pitch.current += (targetPitch - pitch.current) * Math.min(1, delta * 4);
       roll.current += (targetRoll - roll.current) * Math.min(1, delta * 4);
 
-      // --- horizontal thrust from tilt + strafe (relative to heading) ---
+      // --- horizontal thrust from tilt + strafe (camera-relative) ---
+      // The chase cam sits behind the heli along -(sin h, cos h) and looks along
+      // +(sin h, cos h); at any heading, screen-right is world (−cos h, +sin h)
+      // (cross(forward, up)). The velocity formula below maps (fwd, side) in the
+      // camera frame to world-space. With sideThrust=+1 at h=0:
+      //   desVX = sin(0)*fwd - cos(0)*side = -1  (world -x = screen right ✓)
+      //   desVZ = cos(0)*fwd + sin(0)*side = fwd  (world +z = screen up ✓)
+      // So D (strafeIn=+1) moves screen-right, W (pitchIn=-1, fwdThrust=+) moves
+      // forward — matching the car + on-foot feel.
       const sinH = Math.sin(heading.current);
       const cosH = Math.cos(heading.current);
       const speed = boosting ? 30 : 20;
-      // forward thrust from pitch: pitching forward moves you along -heading z
+      // forward: pitchIn is -1 for W, so -pitchIn = +1 forward along (sin,cos)
       const fwdThrust = -pitchIn * speed;
+      // strafe: positive = screen-right (along (−cos h, +sin h))
       const sideThrust = strafeIn * speed * 0.7;
       // world-space desired horizontal velocity
-      const desVX = sinH * fwdThrust + cosH * sideThrust;
-      const desVZ = cosH * fwdThrust - sinH * sideThrust;
+      const desVX = sinH * fwdThrust - cosH * sideThrust;
+      const desVZ = cosH * fwdThrust + sinH * sideThrust;
       // ease toward desired (gives weighty, drifting feel)
       const lerpK = Math.min(1, delta * 2.5);
       vx.current += (desVX - vx.current) * lerpK;
@@ -291,7 +306,7 @@ export default function Helicopter({ id, position = [0, 6, 0] }) {
         {/* main body */}
         <mesh position={[0, 0.7, 0]} castShadow>
           <boxGeometry args={[1.8, 1.0, 2.6]} />
-          <meshStandardMaterial color="#1f6f5c" flatShading metalness={0.3} roughness={0.4} />
+          <meshStandardMaterial color="#1a6b58" flatShading metalness={0.55} roughness={0.3} />
         </mesh>
         {/* cockpit glass */}
         <mesh position={[0, 1.05, 1.2]}>
@@ -299,21 +314,23 @@ export default function Helicopter({ id, position = [0, 6, 0] }) {
           <meshStandardMaterial
             color="#9fd9ff"
             emissive="#4aa8ff"
-            emissiveIntensity={0.3}
+            emissiveIntensity={0.4}
             transparent
-            opacity={0.55}
+            opacity={0.5}
             flatShading
+            metalness={0.3}
+            roughness={0.1}
           />
         </mesh>
         {/* tail boom */}
         <mesh position={[0, 0.9, -2.3]} castShadow>
           <boxGeometry args={[0.45, 0.45, 2.6]} />
-          <meshStandardMaterial color="#1a5d4d" flatShading metalness={0.3} roughness={0.4} />
+          <meshStandardMaterial color="#155a4a" flatShading metalness={0.5} roughness={0.35} />
         </mesh>
         {/* tail fin */}
         <mesh position={[0, 1.4, -3.4]}>
           <boxGeometry args={[0.1, 0.8, 0.6]} />
-          <meshStandardMaterial color="#155042" flatShading />
+          <meshStandardMaterial color="#0f4a3c" flatShading metalness={0.4} roughness={0.4} />
         </mesh>
         {/* skids */}
         <mesh position={[-0.7, 0.1, 0]} rotation={[0, 0, Math.PI / 2]}>

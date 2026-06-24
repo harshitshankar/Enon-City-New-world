@@ -51,12 +51,21 @@ export default function Lobby({ onClose, onCustomize }) {
   const [isHost, setIsHost] = useState(false);
   const [error, setError] = useState("");
   const [myId, setMyId] = useState(null);
+  // Connecting overlay: shown the moment Create/Join is pressed and dismissed
+  // once the roster arrives (or an error/timeout fires). On a free-tier host
+  // like Render the relay can take several seconds to spin up after idle, so we
+  // surface a friendly "please wait, server is loading" instead of a blank hang.
+  const [connecting, setConnecting] = useState(false);
   // Match config mirrored locally; host edits + broadcasts via sendConfig.
   const [cfg, setCfg] = useState({ mode: "tdm4", duration: 10, cops: false });
 
   // Wire up networking callbacks once.
   useEffect(() => {
+    // Socket opened — handshake (join) is now in flight. Keep the overlay up
+    // until the roster actually arrives (dismissed by "roster" below).
+    on("open", () => {});
     on("roster", (players, selfId, room, config) => {
+      setConnecting(false);
       setMyId(selfId);
       setRoomId(room);
       setRosterView(players);
@@ -73,7 +82,12 @@ export default function Lobby({ onClose, onCustomize }) {
     on("leave", (id) => {
       setRosterView((r) => r.filter((p) => p.id !== id));
     });
-    on("error", (msg) => setError(msg));
+    // A connection problem (unreachable / 6s timeout) — drop the overlay and
+    // show the message; the player can still go solo.
+    on("error", (msg) => {
+      setConnecting(false);
+      setError(msg);
+    });
     // Host changed match settings — apply read-only for everyone.
     on("config", (config) => {
       setCfg(config);
@@ -83,6 +97,7 @@ export default function Lobby({ onClose, onCustomize }) {
     // We resolve our own team from the roster here (it's authoritative), set
     // the match clock + config, then enter the city.
     on("start", (_room, roster, config) => {
+      setConnecting(false);
       if (Array.isArray(roster)) {
         const me = roster.find((p) => p.id === myId);
         if (me) setTeam(me.team);
@@ -102,6 +117,7 @@ export default function Lobby({ onClose, onCustomize }) {
     setIsHost(true);
     setCode(c);
     setMultiplayer(true);
+    setConnecting(true);
     joinRoom(c, playerName || "Player");
   };
 
@@ -113,7 +129,17 @@ export default function Lobby({ onClose, onCustomize }) {
     }
     setIsHost(false);
     setMultiplayer(true);
+    setConnecting(true);
     joinRoom(code.toUpperCase(), playerName || "Player");
+  };
+
+  // Cancel back out of a pending connection (the 6s timeout in net.js will
+  // eventually fire its own error; this just clears the overlay immediately).
+  const cancelConnecting = () => {
+    setConnecting(false);
+    setMultiplayer(false);
+    setMode("home");
+    onClose?.();
   };
 
   // Host edits a setting -> update local + push to the server for the room.
@@ -183,6 +209,44 @@ export default function Lobby({ onClose, onCustomize }) {
       <p className="text-cyan-200/70 text-xs tracking-[0.3em] mt-1">
         1–8 PLAYERS · TEAM DEATHMATCH
       </p>
+
+      {/* Connecting overlay: shown while the WebSocket is opening / the relay
+          is waking up. On Render's free tier the server sleeps when idle and
+          takes a few seconds to respond to the first connection, so we tell the
+          player what's happening instead of leaving a blank screen. */}
+      {connecting && (
+        <div className="mt-5 hud-panel rounded-xl px-6 py-5 text-center max-w-sm">
+          <div className="flex items-center justify-center gap-3">
+            {/* CSS spinner (no external deps) */}
+            <span
+              className="inline-block rounded-full"
+              style={{
+                width: 22,
+                height: 22,
+                border: "3px solid rgba(255,120,220,0.25)",
+                borderTopColor: "#ff5ac8",
+                animation: "zcode-spin 0.8s linear infinite",
+              }}
+            />
+            <span className="text-white font-extrabold tracking-wide">
+              Connecting…
+            </span>
+          </div>
+          <div className="text-cyan-200/80 text-xs mt-3 leading-relaxed">
+            The game server is spinning up.
+            <br />
+            Please wait a few seconds — free-tier hosts wake on first connect.
+          </div>
+          <button
+            onClick={cancelConnecting}
+            className="mt-4 text-purple-200/70 hover:text-white text-xs tracking-widest"
+          >
+            ✕ cancel
+          </button>
+          {/* keyframes for the spinner (scoped, injected once) */}
+          <style>{`@keyframes zcode-spin{to{transform:rotate(360deg)}}`}</style>
+        </div>
+      )}
 
       {error && (
         <div className="mt-4 hud-panel rounded-lg px-4 py-2 text-red-300 text-sm max-w-sm">

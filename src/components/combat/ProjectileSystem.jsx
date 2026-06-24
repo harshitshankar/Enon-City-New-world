@@ -21,10 +21,13 @@ const SPEEDS = { pistol: 95, rifle: 120, rocket: 40, bow: 50 };
 const GRAVITY = { pistol: 0, rifle: 0, rocket: 0, bow: -16 };
 const LIFE = { pistol: 1.4, rifle: 1.4, rocket: 3.2, bow: 3.5 };
 const EXPLOSIVE = { pistol: false, rifle: false, rocket: true, bow: true };
-// per-hit damage to NPCs / vehicles
-const DMG = { pistol: 12, rifle: 11, rocket: 120, bow: 70 };
+// per-hit damage to NPCs / vehicles. Bumped so small arms can actually wreck a
+// 100-HP car in a reasonable number of hits (pistol ~5, rifle ~6) instead of
+// needing a full clip + reload. Rockets/arrows were already lethal.
+const DMG = { pistol: 22, rifle: 16, rocket: 120, bow: 70 };
 // per-hit damage to other human players (PvP) — tuned for a snappy TTK at 100 HP.
-const PLAYER_DMG = { pistol: 18, rifle: 13, rocket: 110, bow: 60 };
+// Pistol ~5 hits, rifle ~7 hits — easy to secure a kill even with 15 Hz net lag.
+const PLAYER_DMG = { pistol: 20, rifle: 15, rocket: 110, bow: 60 };
 // render category: pistol & rifle render as tracers
 const RENDER = { pistol: "bullet", rifle: "bullet", rocket: "rocket", bow: "arrow" };
 
@@ -203,7 +206,7 @@ export default function ProjectileSystem() {
       // actually register as hits.
       if (!hit) {
         const pdmg = PLAYER_DMG[p.type] || 15;
-        const R_PEER = 2.2; // generous hit radius for network-synced positions
+        const R_PEER = 2.6; // generous hit radius for network-synced positions
         for (const id in peers) {
           const peer = peers[id];
           if (!peer || peer.health <= 0) continue;
@@ -213,8 +216,6 @@ export default function ProjectileSystem() {
           const R = R_PEER;
           const t = segSphereT(p.prevPos, p.pos, cx, cy, cz, R * R);
           if (t >= 0 && t <= 1) {
-            hit = true;
-            hitPos = new THREE.Vector3().lerpVectors(p.prevPos, p.pos, t);
             const st = useGameStore.getState();
             // Friendly fire off in team mode: skip allies. Guard against
             // undefined team (e.g. peer hasn't received the start roster yet)
@@ -222,7 +223,9 @@ export default function ProjectileSystem() {
             const me = st.team;
             const them = peer.team;
             const ally = me && them && me === them;
-            if (ally) break;
+            if (ally) continue; // pass through teammates — don't stop the bullet
+            hit = true;
+            hitPos = new THREE.Vector3().lerpVectors(p.prevPos, p.pos, t);
             // Report the hit to the victim over the net so their health drops.
             sendHit(peer.id, pdmg);
             // Optimistically decrement the victim's health LOCALLY so subsequent
@@ -250,7 +253,7 @@ export default function ProjectileSystem() {
       if (!hit) {
         const mx = (p.prevPos.x + p.pos.x) * 0.5;
         const mz = (p.prevPos.z + p.pos.z) * 0.5;
-        const reach = 0.5 * Math.hypot(p.pos.x - p.prevPos.x, p.pos.z - p.prevPos.z) + 4;
+        const reach = 0.5 * Math.hypot(p.pos.x - p.prevPos.x, p.pos.z - p.prevPos.z) + 6;
         const reach2 = reach * reach;
         for (const v of vehicleRegistry.values()) {
           if (v.destroyed && v.destroyed()) continue;
@@ -258,8 +261,10 @@ export default function ProjectileSystem() {
           // broad phase: skip vehicles nowhere near the segment
           const ddx = vp.x - mx, ddz = vp.z - mz;
           if (ddx * ddx + ddz * ddz > reach2) continue;
-          // sample a few points along the segment against the car's hit volume
-          const stepCount = 3;
+          // sample points along the segment against the car's hit volume.
+          // Generous radius (3.2 = 10.24 sq) so bullets reliably connect with
+          // the 2x4.2 car body. The Y window covers wheels to roof.
+          const stepCount = 4;
           for (let s = 0; s <= stepCount; s++) {
             const tt = s / stepCount;
             const sx = p.prevPos.x + (p.pos.x - p.prevPos.x) * tt;
@@ -267,9 +272,11 @@ export default function ProjectileSystem() {
             const sz = p.prevPos.z + (p.pos.z - p.prevPos.z) * tt;
             const d = (vp.x - sx) ** 2 + (vp.z - sz) ** 2;
             const dy = vp.y + 0.6 - sy;
-            if (d < 6.8 && dy > -1.4 && dy < 1.6) {
+            if (d < 10.5 && dy > -1.6 && dy < 2.0) {
               hit = true;
               hitPos = new THREE.Vector3(sx, sy, sz);
+              // Always bump hit feedback so the shooter sees the shot connect.
+              useGameStore.getState().registerHit();
               v.onHit?.(dmg);
               break;
             }

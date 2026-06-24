@@ -9,6 +9,10 @@ import StreetLightGlow from "./StreetLightGlow";
 // children it imports (Plaza, StreetLightGlow, ...) can both read them without
 // forming a circular import. Re-exported below for any legacy callers.
 import { BLOCK, GRID, ROAD_W, HALF, cityConfig } from "./constants";
+// Deterministic building + district data shared with VehicleManager so vehicle
+// spawns can be validated against the REAL building footprints (no more cars
+// spawning inside walls).
+import { getBuildings, districtOf, seededRand } from "./cityLayout";
 
 /**
  * World
@@ -29,42 +33,22 @@ import { BLOCK, GRID, ROAD_W, HALF, cityConfig } from "./constants";
 // World (kept for backward compatibility). The source of truth is constants.js.
 export { BLOCK, GRID, ROAD_W, HALF, cityConfig };
 
-/* ---------- districts ---------- */
-// District layout by normalized grid coordinate (0..1 across the map):
-//   - The PARK/LAKE occupies the +x,+z corner quadrant.
-//   - DOWNTOWN is the central band.
-//   - SUBURBS is everything else (outer ring).
-const LAKE = { x0: 0.5, z0: 0.5 }; // lake starts at the +x,+z corner
-function districtOf(gx, gz) {
-  // normalized 0..1
-  const nx = gx / (GRID - 1);
-  const nz = gz / (GRID - 1);
-  // Park/Lake: the +x,+z quadrant
-  if (nx >= LAKE.x0 && nz >= LAKE.z0) return "park";
-  // Downtown: central 40% band on both axes
-  const cx = Math.abs(nx - 0.5);
-  const cz = Math.abs(nz - 0.5);
-  if (cx < 0.22 && cz < 0.22) return "downtown";
-  return "suburbs";
-}
-
-function seededRand(i) {
-  const x = Math.sin(i * 127.1 + 311.7) * 43758.5453;
-  return x - Math.floor(x);
-}
-
-/* District styling tables */
+/* District styling tables — richer neon-noir palettes for a polished look.
+ * (district + footprint geometry now live in cityLayout.js, shared with
+ * VehicleManager so vehicle spawns validate against the REAL buildings.) */
 const DISTRICT_STYLE = {
   downtown: {
     minH: 22, maxH: 60,
     minW: 14, maxW: 18,
-    palette: ["#2c1840", "#3a1c3e", "#241a44", "#42203a"],
+    // Deep violet/indigo glass towers with neon edge tint
+    palette: ["#1a1438", "#241a4a", "#1e1640", "#2a1e52", "#181230"],
     windows: true,
   },
   suburbs: {
     minH: 4, maxH: 12,
     minW: 12, maxW: 16,
-    palette: ["#4a3b5a", "#3f4a5a", "#5a4a4a", "#455a4a"],
+    // Warm-toned low-rises: terracotta, slate, teal
+    palette: ["#3a2f4a", "#34404e", "#4a3a3e", "#2e4a44", "#3e3a52"],
     windows: true,
   },
   park: {
@@ -76,30 +60,10 @@ const DISTRICT_STYLE = {
 };
 
 export default function World() {
-  /* ---------------- Building data (district-aware) ---------------- */
-  const buildings = useMemo(() => {
-    const arr = [];
-    let id = 0;
-    for (let gx = 0; gx < GRID; gx++) {
-      for (let gz = 0; gz < GRID; gz++) {
-        const cx = -HALF + gx * BLOCK + BLOCK / 2;
-        const cz = -HALF + gz * BLOCK + BLOCK / 2;
-        const district = districtOf(gx, gz);
-        const style = DISTRICT_STYLE[district];
-        // Park district: no building — skip (trees fill it instead).
-        if (district === "park") {
-          id += 2;
-          continue;
-        }
-        const r = seededRand(id++);
-        const r2 = seededRand(id++);
-        const h = style.minH + Math.floor(r * ((style.maxH - style.minH) / 2 + 1)) * 2;
-        const w = style.minW + r2 * (style.maxW - style.minW);
-        arr.push({ x: cx, z: cz, h, w, district });
-      }
-    }
-    return arr;
-  }, []);
+  /* ---------------- Building data (district-aware) ----------------
+   * Sourced from the shared, deterministic cityLayout module so VehicleManager
+   * can validate spawns against the exact same footprints we render. */
+  const buildings = useMemo(() => getBuildings(), []);
 
   /* ---------------- Publish landable rooftops for the helicopter ----------------
    * The helicopter reads window.__buildingTops each frame to know where it can
@@ -187,6 +151,35 @@ function Ground() {
 /* ============================================================= */
 /*  LAKE — translucent water in the park quadrant + shore walls  */
 /* ============================================================= */
+// Animated water surface: a slow emissive pulse + a tiny vertical bob so the
+// lake reads as living water rather than a flat decal. Cheap (one useFrame,
+// one material uniform tweak).
+function LakeSurface({ x, z, w, h }) {
+  const matRef = useRef();
+  useFrame((state) => {
+    const t = state.clock.elapsedTime;
+    if (matRef.current) {
+      // gentle shimmer: emissive intensity breathes between 0.18 and 0.34
+      matRef.current.emissiveIntensity = 0.26 + Math.sin(t * 0.8) * 0.08;
+    }
+  });
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[x, 0.06, z]} receiveShadow>
+      <planeGeometry args={[w, h, 1, 1]} />
+      <meshStandardMaterial
+        ref={matRef}
+        color="#1f6fb0"
+        emissive="#2a8fd0"
+        emissiveIntensity={0.26}
+        transparent
+        opacity={0.82}
+        roughness={0.15}
+        metalness={0.4}
+      />
+    </mesh>
+  );
+}
+
 function Lake() {
   // A lake in the inner part of the park quadrant. Shore colliders keep cars
   // out but the helicopter can fly over it.
@@ -196,18 +189,7 @@ function Lake() {
   const lh = HALF - 24;
   return (
     <group>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[lx, 0.06, lz]}>
-        <planeGeometry args={[lw, lh]} />
-        <meshStandardMaterial
-          color="#1f6fb0"
-          emissive="#2a8fd0"
-          emissiveIntensity={0.25}
-          transparent
-          opacity={0.82}
-          roughness={0.2}
-          metalness={0.3}
-        />
-      </mesh>
+      <LakeSurface x={lx} z={lz} w={lw} h={lh} />
       {/* invisible shore walls so cars can't drive in */}
       <RigidBody type="fixed" colliders={false}>
         <CuboidCollider args={[lw / 2, 1.5, 1]} position={[lx, 1.5, lz - lh / 2]} sensor />
@@ -255,7 +237,8 @@ function Roads() {
         receiveShadow
       >
         <boxGeometry args={[1, 0.08, 1]} />
-        <meshStandardMaterial color="#1b1622" roughness={0.85} />
+        {/* Slightly reflective asphalt with a hint of wet sheen at night */}
+        <meshStandardMaterial color="#15121c" roughness={0.7} metalness={0.15} />
       </instancedMesh>
       <RoadMarkings />
     </>
@@ -304,11 +287,13 @@ function RoadMarkings() {
   return (
     <instancedMesh ref={dashRef} args={[undefined, undefined, dashes.length]}>
       <boxGeometry args={[0.28, 0.02, 2.2]} />
+      {/* Brighter emissive road markings for that neon-night look */}
       <meshStandardMaterial
-        color="#f5f0e0"
-        emissive="#cfc8b0"
-        emissiveIntensity={0.15}
-        roughness={0.6}
+        color="#fff4d0"
+        emissive="#ffe88a"
+        emissiveIntensity={0.45}
+        roughness={0.5}
+        toneMapped={false}
       />
     </instancedMesh>
   );
@@ -352,7 +337,8 @@ function Sidewalks() {
       receiveShadow
     >
       <boxGeometry args={[1, 0.18, 1]} />
-      <meshStandardMaterial color="#4a4458" roughness={0.9} />
+      {/* Concrete sidewalks with a touch of cool tint */}
+      <meshStandardMaterial color="#3d3a4e" roughness={0.8} metalness={0.1} />
     </instancedMesh>
   );
 }
@@ -412,8 +398,12 @@ function Buildings({ buildings }) {
     }
     const wm = winRef.current;
     if (wm) {
+      // Window palette: warm interior lights + neon cyan/magenta/pink accents
+      // so the city glows like a proper synthwave skyline at night.
       const warm = new THREE.Color("#ffcf6e");
       const neon = new THREE.Color("#7be0ff");
+      const pink = new THREE.Color("#ff5ac8");
+      const magenta = new THREE.Color("#c44aff");
       const cache = [];
       windows.forEach((w, i) => {
         dummy.position.set(w.x, w.y, w.z);
@@ -424,7 +414,13 @@ function Buildings({ buildings }) {
         wm.setMatrixAt(i, dummy.matrix);
         // cache the visible matrix so the cull pass can restore it cheaply
         cache.push(dummy.matrix.clone());
-        wm.setColorAt(i, seededRand(i) > 0.82 ? neon : warm);
+        // 18% cyan neon, 6% pink, 4% magenta, rest warm — varied skyline glow
+        const roll = seededRand(i);
+        let c = warm;
+        if (roll > 0.82) c = neon;
+        else if (roll > 0.76) c = pink;
+        else if (roll > 0.72) c = magenta;
+        wm.setColorAt(i, c);
       });
       realMatrices.current = cache;
       wm.instanceMatrix.needsUpdate = true;
@@ -474,7 +470,9 @@ function Buildings({ buildings }) {
           receiveShadow
         >
           <boxGeometry args={[1, 1, 1]} />
-          <meshStandardMaterial roughness={0.85} flatShading />
+          {/* Glassy skyscraper look: slight metalness + low roughness for a
+              subtle sheen; flatShading keeps the low-poly silhouette crisp. */}
+          <meshStandardMaterial roughness={0.55} metalness={0.45} flatShading />
         </instancedMesh>
         {buildings.map((b, i) => (
           <CuboidCollider
@@ -530,12 +528,25 @@ function Trees({ trees }) {
     <group>
       <instancedMesh ref={trunkRef} args={[undefined, undefined, trees.length]} castShadow>
         <cylinderGeometry args={[0.25, 0.35, 2.4, 6]} />
-        <meshStandardMaterial color="#5a3a22" flatShading />
+        <meshStandardMaterial color="#4a2e18" flatShading roughness={0.9} />
       </instancedMesh>
       <instancedMesh ref={leafRef} args={[undefined, undefined, trees.length]} castShadow>
         <coneGeometry args={[1.8, 4, 7]} />
-        <meshStandardMaterial color="#2f7d3a" flatShading />
+        {/* Vibrant lush green leaves with subtle emissive glow for depth */}
+        <meshStandardMaterial color="#2f9d3a" flatShading roughness={0.7} emissive="#1a5a22" emissiveIntensity={0.15} />
       </instancedMesh>
+      {/* Solid trunk colliders so the player + cars bump off trees instead of
+          passing through them. Wide enough (1.4m) that a car can't clip past at
+          speed, tall enough to cover the trunk + lower foliage. */}
+      <RigidBody type="fixed" colliders={false}>
+        {trees.map((t, i) => (
+          <CuboidCollider
+            key={i}
+            args={[0.7 * t.s, 2.2 * t.s, 0.7 * t.s]}
+            position={[t.x, 2.2 * t.s, t.z]}
+          />
+        ))}
+      </RigidBody>
     </group>
   );
 }
