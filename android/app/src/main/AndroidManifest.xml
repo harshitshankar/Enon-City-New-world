@@ -2,8 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Keep the screen on while playing. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- AdMob (Google Play Services) ad ID -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
 
     <application
         android:allowBackup="true"
@@ -13,6 +16,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.NeonCity"
         android:usesCleartextTraffic="true">
+
+        <!-- AdMob App ID. Test ID by default (see app/build.gradle manifestPlaceholders).
+             Swap in your real ca-app-pub-XXXX~XXXX before shipping to Play. -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="${ADMOB_APP_ID}" />
 
         <activity
             android:name=".MainActivity"

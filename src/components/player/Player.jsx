@@ -15,6 +15,7 @@ import useKeyboard from "../../hooks/useKeyboard";
 import { nearestVehicle } from "../../lib/registry";
 import { requestProjectile } from "../../lib/events";
 import { playSfx } from "../../lib/audio";
+import { showInterstitial } from "../../lib/ads";
 import { HALF } from "../world/World";
 import CharacterMesh from "./CharacterMesh";
 
@@ -99,6 +100,9 @@ export default function Player() {
       // If they died inside a car, the Car explodes on its own and calls
       // exitVehicle(); make sure we're on foot before relocating.
       if (st.activeVehicle) st.exitVehicle();
+
+      // Monetisation: request an interstitial on death (rate-limited + no-op on web).
+      showInterstitial();
 
       // SOLO: instant respawn (keep the original snappy feel).
       // MULTIPLAYER: 3s respawn delay so there's a beat before you drop back in.

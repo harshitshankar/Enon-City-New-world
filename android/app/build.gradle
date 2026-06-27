@@ -4,20 +4,37 @@ plugins {
 
 android {
     namespace 'com.neoncity.game'
-    compileSdk 34
+    compileSdk 35   // matches installed SDK (android-36/36.1 present; 35 is the stable AGP 8.2 target)
 
     defaultConfig {
         applicationId "com.neoncity.game"
         minSdk 24    // Android 7.0 — covers 95%+ devices + has good WebGL2
-        targetSdk 34
+        targetSdk 35
         versionCode 1
         versionName "1.0.0"
+
+        // AdMob test App ID. Replace with your real AdMob App ID before publishing.
+        // (Manifest references this via ${ADMob_APP_ID}.)
+        manifestPlaceholders = [
+            ADMOB_APP_ID: "ca-app-pub-3940256099942544~3347511713"
+        ]
+    }
+
+    // NOTE: signingConfigs MUST be declared before buildTypes references it.
+    signingConfigs {
+        release {
+            storeFile file("../keystore/neon-release.jks")
+            storePassword "neoncity2026"
+            keyAlias "neon"
+            keyPassword "neoncity2026"
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
     }
 
@@ -25,9 +42,17 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+
+    // AGP 8+ disables BuildConfig generation by default; we use BuildConfig.DEBUG.
+    buildFeatures {
+        buildConfig true
+    }
 }
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.webkit:webkit:1.9.0'
+
+    // Google Mobile Ads (AdMob) — banner + interstitial.
+    implementation 'com.google.android.gms:play-services-ads:23.6.0'
 }
